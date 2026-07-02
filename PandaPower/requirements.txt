@@ -1,0 +1,6 @@
+pandapower>=2.14
+pandas>=2.0
+openpyxl>=3.1
+networkx>=3.2
+matplotlib>=3.8
+pytest>=7.0

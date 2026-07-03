@@ -35,6 +35,7 @@ class LoadFlowRunner:
         algorithm: str = "nr",
         calculate_voltage_angles: bool = True,
         enforce_q_lims: bool = False,
+        distributed_slack: bool = False,
         max_iteration: int = 50,
         tolerance_mva: float = 1e-8,
     ) -> bool:
@@ -81,6 +82,7 @@ class LoadFlowRunner:
                 enforce_q_lims=enforce_q_lims,
                 max_iteration=max_iteration,
                 tolerance_mva=tolerance_mva,
+                distributed_slack=distributed_slack
             )
             converged = self.net["converged"]
         except pp.powerflow.LoadflowNotConverged:

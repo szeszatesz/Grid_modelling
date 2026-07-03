@@ -8,17 +8,18 @@ from pandapower import to_excel
 
 # ── 1. Build the network ──────────────────────────────────────────────────────
 builder = NetworkBuilder()
-building = True
+building = False
 if building:
     net = builder.build(
         excel_path="PandaPower/2034sn_fp1_tv1_3_none-torf_de_all_v22_celallapot_zarlat_summer_small_load_increase.xlsx",
         season=RATING_SEASON_SUMMER,
         output_dir="/home/attilas/Grid_modelling/PandaPower/models",
     )
+    to_excel(net, "PandaPower/models/model.xlsx", include_results=True, include_empty_tables=True)
 else:
     net = builder.load("PandaPower/models/model.json")
 
-to_excel(net, "PandaPower/models/model.xlsx", include_results=True, include_empty_tables=True)
+
 
 diagnose = False
 if diagnose:
@@ -44,11 +45,13 @@ if exe_lf:
         tech_gen_overrides={"WINDONSHORE": 0.85, "SOLARPHOTOVO": 1.00, "BATTERYSTRG": 1.00},
         enforce_q_lims=True,
         calculate_voltage_angles=False,
+        distributed_slack=True,        
     )
     if ok:
         runner.print_summary()
         overloads = runner.overloaded_lines()
         print(f"Overloaded lines:\n{overloads.to_string(index=False)}")
+        to_excel(net, "PandaPower/models/modelwithLF_v1.xlsx", include_results=True, include_empty_tables=True)
 
     ok = runner.run(
         season=RATING_SEASON_WINTER,
@@ -56,3 +59,5 @@ if exe_lf:
     )
     if ok:
         runner.print_summary()
+        to_excel(net, "PandaPower/models/modelwithLF_v2.xlsx", include_results=True, include_empty_tables=True)
+

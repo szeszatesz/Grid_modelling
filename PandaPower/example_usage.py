@@ -7,25 +7,26 @@ from pandapower.diagnostic.diagnostic_functions import MultipleVoltageControllin
 
 # ── 1. Build the network ──────────────────────────────────────────────────────
 builder = NetworkBuilder()
-building = False
+building = True
 if building:
     net = builder.build(
-        excel_path="2034sn_fp1_tv1_3_none-torf_de_all_v22_celallapot_zarlat_summer_small_load_increase.xlsx",
+        excel_path="PandaPower/2034sn_fp1_tv1_3_none-torf_de_all_v22_celallapot_zarlat_summer_small_load_increase.xlsx",
         season=RATING_SEASON_SUMMER,
-        output_path="model_summer.json",
+        output_dir="/home/attilas/Grid_modelling/PandaPower/models",
     )
 else:
-    net = builder.load("model_summer.json")
+    net = builder.load("PandaPower/models/model.json")
 
 
+diagnose = True
+if diagnose:
+    checker = MultipleVoltageControllingElementsPerBus()
+    print(f"Following buses have multiple controlling elements {checker.diagnostic(net)}")
 
-checker = MultipleVoltageControllingElementsPerBus()
-print(f"Following buses have multiple controlling elements {checker.diagnostic(net)}")
+    # ── 2. Topology health-check ──────────────────────────────────────────────────
+    report_islands(net)
 
-# ── 2. Topology health-check ──────────────────────────────────────────────────
-report_islands(net)
-
-diagnostic(net)
+    diagnostic(net)
 
 # ── 3. Draw the network ───────────────────────────────────────────────────────
 #draw_network(net, output_path="network.png", show_labels=True)

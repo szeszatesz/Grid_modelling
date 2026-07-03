@@ -91,3 +91,7 @@ def _str(row: pd.Series, col: str, default: str = "") -> str:
     if pd.isna(val):
         return default
     return str(val).strip()
+
+def _int(row: pd.Series, col: str, default: int = 0) -> int:
+    v = _float(row, col, float("nan"))
+    return int(v) if not math.isnan(v) else default

@@ -2,6 +2,7 @@
 network_builder.py — orchestrator that calls all sub-builders in order.
 """
 from __future__ import annotations
+from pathlib import Path
 
 import pandapower as pp
 import math
@@ -14,6 +15,7 @@ from pp_builder.transformer_builder import build_transformers
 from pp_builder.load_builder       import build_loads
 from pp_builder.generator_builder  import build_generators
 from pp_builder.ext_grid_builder   import build_ext_grids
+from pp_builder.shunt_builder      import build_shunts
 
 
 
@@ -46,12 +48,13 @@ class NetworkBuilder:
         self.load_map: dict[str, int] = {}
         self.gen_map: dict[str, tuple[str, int]] = {}
         self.ext_grid_map: dict[str, int] = {}
+        self.shunt_map: dict[str, int] = {}
 
     def build(
         self,
         excel_path: str,
         season: str = RATING_SEASON_SUMMER,
-        output_path: str | None = None,
+        output_dir: str | None = None,
         f_hz: float = 50.0,
         sn_mva: float = 100.0,
     ) -> pp.pandapowerNet:
@@ -89,6 +92,9 @@ class NetworkBuilder:
         self.load_map   = build_loads(self.net, sheets, self.bus_map)
         self.gen_map    = build_generators(self.net, sheets, self.bus_map, season)
         self.ext_grid_map = build_ext_grids(self.net, sheets, self.bus_map)
+        self.shunt_map = build_shunts(self.net, sheets, self.bus_map)
+
+
 
         #check_trafo_impedance(self.net)
         #check_trafo3w_impedance(self.net)
@@ -101,11 +107,14 @@ class NetworkBuilder:
         print(f"  Loads         : {len(self.net.load)}")
         print(f"  Generators    : {len(self.net.gen)} gen + {len(self.net.sgen)} sgen")
         print(f"  Ext. grids    : {len(self.net.ext_grid)}")
+        print(f"  Shunts        : {len(self.net.shunt)}")
         print(f"{'='*60}\n")
 
-        if output_path:
-            pp.to_json(self.net, "raw" + output_path)
-            print(f"[NetworkBuilder]  Saved → {output_path}")
+        if output_dir:
+            out = Path(output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            pp.to_json(self.net, out / 'rawmodel.json')
+            print(f"[NetworkBuilder]  Saved → {out / 'rawmodel.json'}")
 
         pp.drop_inactive_elements(self.net,respect_switches=True)
 
@@ -117,11 +126,14 @@ class NetworkBuilder:
         print(f"  Loads         : {len(self.net.load)}")
         print(f"  Generators    : {len(self.net.gen)} gen + {len(self.net.sgen)} sgen")
         print(f"  Ext. grids    : {len(self.net.ext_grid)}")
+        print(f"  Shunts        : {len(self.net.shunt)}")
         print(f"{'='*60}\n")
 
-        if output_path:
-            pp.to_json(self.net, output_path)
-        print(f"[NetworkBuilder]  Saved → {output_path}")
+        if output_dir:
+            out = Path(output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            pp.to_json(self.net, out / 'model.json')
+            print(f"[NetworkBuilder]  Saved → {out / 'model.json'}")
 
         return self.net
     
@@ -175,12 +187,29 @@ class NetworkBuilder:
             for idx, row in self.net.sgen.iterrows():
                 self.gen_map[str(row["name"])] = ("sgen", idx)
 
+            # Rebuild ext_grid_map: name → index
+            self.ext_grid_map = {
+                str(row["name"]): idx
+                for idx, row in self.net.ext_grid.iterrows()
+            }
+
+            # Rebuild shunt_map: name → index
+            self.shunt_map = {
+                str(row["name"]): idx
+                for idx, row in self.net.shunt.iterrows()
+            }
+
+            print(f"\n{'='*60}")
             print(f"[NetworkBuilder]  Loaded '{json_path}'")
             print(f"  Buses        : {len(self.net.bus)}")
             print(f"  Lines        : {len(self.net.line)}")
             print(f"  Transformers : {len(self.net.trafo) + len(self.net.trafo3w)}")
             print(f"  Loads        : {len(self.net.load)}")
             print(f"  Generators   : {len(self.net.gen)} gen + {len(self.net.sgen)} sgen")
+            print(f"  Ext. grids   : {len(self.net.ext_grid)}")
+            print(f"  Shunts       : {len(self.net.shunt)}")
+            print(f"{'='*60}\n")
+
 
             return self.net
 

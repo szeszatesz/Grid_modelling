@@ -47,6 +47,7 @@ SHEET_2W_TRANSFORMERS = "2 Transzformátor"
 SHEET_3W_TRANSFORMERS = "3 Transzformátor"
 SHEET_LOADS        = "Fogyasztás"
 SHEET_GENERATORS   = "Termelés"
+SHEET_SHUNTS       = "Kapcsolható sönt"
 
 # ── Required columns per sheet ────────────────────────────────────────────────
 REQUIRED_COLUMNS = {
@@ -83,5 +84,8 @@ REQUIRED_COLUMNS = {
     ],
     SHEET_GENERATORS: [
     "Végpont", "Hely", "Engedélyesi azonosító", "Bent", "MVA", "Pmax", "Pmin", "Qmax", "Qmin", "P", "Q", "Szabpont", "Uszab", "Technológia"
-    ]   
+    ],
+    SHEET_SHUNTS: [
+    "Végpont", "Engedélyesi azonosító", "Bent", "N", "S", "Yz", "So"
+    ]
 }

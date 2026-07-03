@@ -32,10 +32,7 @@ def build_busbars(
 
     for _, row in df.iterrows():
         name       = _str(row, "Azonosító")
-        nom_kv_str = name[-6:].strip()
-        vn_kv      = float(nom_kv_str)
-        if vn_kv == 120.00:
-            vn_kv = 132.00
+        vn_kv      = voltage_reader(name)
         zone       = _str(row, "Zóna", None)
         vm_pu      = _float(row, "U", 1.0) / vn_kv   # optional column
 
@@ -54,5 +51,20 @@ def build_busbars(
           f"{len(slack_buses)} slack/ext_grid(s).")
     
     return bus_map
+
+
+def voltage_reader(name):
+    """
+    Read the nominal voltage from the busbar name.
+
+    The last 6 characters of the name are expected to be the voltage in kV,
+    e.g. "Busbar_132.00" → 132.0 kV.
+    """
+    nom_kv_str = name[-6:].strip()
+    vn_kv      = float(nom_kv_str)
+    if vn_kv == 120.00:
+        vn_kv = 132.00
+    return vn_kv
+
 
 

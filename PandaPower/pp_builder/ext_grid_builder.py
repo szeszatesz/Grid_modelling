@@ -66,11 +66,11 @@ def build_ext_grids(
         vm_pu   = _float(row, "Uszab",  1.0) / net.bus.at[bus_map[bus_name], "vn_kv"]
         sn_mva  = _float(row, "MVA", float("nan"))
 
-        max_q_mvar = _float(row, "Qmax",  0.0)
-        min_q_mvar = _float(row, "Qmin",  0.0)
+        max_q_mvar = _float(row, "Qmax",  0.0) + 200
+        min_q_mvar = _float(row, "Qmin",  0.0) - 200
 
-        max_p_mw   = _float(row, "Pmax",  0.0)
-        min_p_mw   = _float(row, "Pmin",  0.0)
+        max_p_mw   = _float(row, "Pmax",  0.0) + 200
+        min_p_mw   = _float(row, "Pmin",  0.0) - 200
 
         ext_grid_idx = pp.create_ext_grid(
             net,

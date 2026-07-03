@@ -4,6 +4,7 @@ from pp_builder.network_topology import report_islands
 from pp_builder.network_visualiser import draw_network
 from pandapower.diagnostic.diagnostic_helpers import diagnostic
 from pandapower.diagnostic.diagnostic_functions import MultipleVoltageControllingElementsPerBus
+from pandapower import to_excel
 
 # ── 1. Build the network ──────────────────────────────────────────────────────
 builder = NetworkBuilder()
@@ -17,8 +18,9 @@ if building:
 else:
     net = builder.load("PandaPower/models/model.json")
 
+to_excel(net, "PandaPower/models/model.xlsx", include_results=True, include_empty_tables=True)
 
-diagnose = True
+diagnose = False
 if diagnose:
     checker = MultipleVoltageControllingElementsPerBus()
     print(f"Following buses have multiple controlling elements {checker.diagnostic(net)}")
@@ -32,7 +34,7 @@ if diagnose:
 #draw_network(net, output_path="network.png", show_labels=True)
 
 # ── 4. Summer load flow ───────────────────────────────────────────────────────
-exe_lf = False
+exe_lf = True
 if exe_lf:
     runner = LoadFlowRunner(net)
     ok = runner.run(
@@ -40,6 +42,8 @@ if exe_lf:
         load_scale=1.10,             # 110% of base load
         # per-technology generator overrides (optional):
         tech_gen_overrides={"WINDONSHORE": 0.85, "SOLARPHOTOVO": 1.00, "BATTERYSTRG": 1.00},
+        enforce_q_lims=True,
+        calculate_voltage_angles=False,
     )
     if ok:
         runner.print_summary()

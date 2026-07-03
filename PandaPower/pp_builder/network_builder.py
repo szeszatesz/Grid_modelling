@@ -11,7 +11,8 @@ from pp_builder.config import RATING_SEASON_SUMMER
 from pp_builder.excel_reader import read_excel
 from pp_builder.busbar_builder     import build_busbars
 from pp_builder.branch_builder     import build_branches
-from pp_builder.transformer_builder import build_transformers
+from pp_builder.transformer_2w_builder import build_transformers
+from pp_builder.transformer_3w_builder import build_transformers_3w
 from pp_builder.load_builder       import build_loads
 from pp_builder.generator_builder  import build_generators
 from pp_builder.ext_grid_builder   import build_ext_grids
@@ -45,6 +46,7 @@ class NetworkBuilder:
         self.bus_map: dict[str, int] = {}
         self.branch_map: dict[str, int] = {}
         self.trafo_map: dict[str, int] = {}
+        self.trafo3w_map: dict[str, int] = {}
         self.load_map: dict[str, int] = {}
         self.gen_map: dict[str, tuple[str, int]] = {}
         self.ext_grid_map: dict[str, int] = {}
@@ -89,6 +91,7 @@ class NetworkBuilder:
         self.bus_map   = build_busbars(self.net, sheets)
         self.branch_map = build_branches(self.net, sheets, self.bus_map, season)
         self.trafo_map  = build_transformers(self.net, sheets, self.bus_map)
+        self.trafo3w_map = build_transformers_3w(self.net, sheets, self.bus_map)
         self.load_map   = build_loads(self.net, sheets, self.bus_map)
         self.gen_map    = build_generators(self.net, sheets, self.bus_map, season)
         self.ext_grid_map = build_ext_grids(self.net, sheets, self.bus_map)
@@ -103,7 +106,8 @@ class NetworkBuilder:
         print(f"Network summary:")
         print(f"  Buses         : {len(self.net.bus)}")
         print(f"  Lines         : {len(self.net.line)}")
-        print(f"  Transformers  : {len(self.net.trafo) + len(self.net.trafo3w)}")
+        print(f"  2WTransformers  : {len(self.net.trafo)}")
+        print(f"  3WTransformers  : {len(self.net.trafo3w)}")
         print(f"  Loads         : {len(self.net.load)}")
         print(f"  Generators    : {len(self.net.gen)} gen + {len(self.net.sgen)} sgen")
         print(f"  Ext. grids    : {len(self.net.ext_grid)}")
@@ -122,7 +126,8 @@ class NetworkBuilder:
         print(f"Network summary:")
         print(f"  Buses         : {len(self.net.bus)}")
         print(f"  Lines         : {len(self.net.line)}")
-        print(f"  Transformers  : {len(self.net.trafo) + len(self.net.trafo3w)}")
+        print(f"  2WTransformers  : {len(self.net.trafo)}")
+        print(f"  3WTransformers  : {len(self.net.trafo3w)}")
         print(f"  Loads         : {len(self.net.load)}")
         print(f"  Generators    : {len(self.net.gen)} gen + {len(self.net.sgen)} sgen")
         print(f"  Ext. grids    : {len(self.net.ext_grid)}")
@@ -203,7 +208,8 @@ class NetworkBuilder:
             print(f"[NetworkBuilder]  Loaded '{json_path}'")
             print(f"  Buses        : {len(self.net.bus)}")
             print(f"  Lines        : {len(self.net.line)}")
-            print(f"  Transformers : {len(self.net.trafo) + len(self.net.trafo3w)}")
+            print(f"  2WTransformers : {len(self.net.trafo)}")
+            print(f"  3WTransformers : {len(self.net.trafo3w)}")
             print(f"  Loads        : {len(self.net.load)}")
             print(f"  Generators   : {len(self.net.gen)} gen + {len(self.net.sgen)} sgen")
             print(f"  Ext. grids   : {len(self.net.ext_grid)}")

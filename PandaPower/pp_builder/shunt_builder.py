@@ -73,10 +73,10 @@ def build_shunts(
         # ── Determine in_service for this individual step ──────────────────
         # If So is given and non-zero, work out how many steps are active.
         # Steps with step_no <= active_steps are in service.
-        step_in_service = in_service
+
         if not math.isnan(so_mvar) and so_mvar != 0.0 and s_per_step != 0.0:
             active_steps    = round(abs(so_mvar) / abs(s_per_step))
-            step_in_service = in_service and (n_steps <= active_steps)
+   
 
         # ── Choose element type ────────────────────────────────────────────
         is_mscdn = (not math.isnan(yz_us)) and (abs(yz_us) > 1e-9)
@@ -86,11 +86,11 @@ def build_shunts(
             # S column is the parallel capacitor stage (MVAr) — also reflected
             # as a q_mvar on the shunt for consistent power accounting.
             b_pu   = _us_to_b_pu(yz_us, vn_kv)
-            q_mvar = s_per_step          # MVAr component (positive = capacitive)
+            q_mvar = so_mvar          # MVAr component (positive = capacitive)
         else:
             # Plain reactor or fixed capacitor bank — use Q directly
             b_pu   = _mvar_to_b_pu(s_per_step, vn_kv)
-            q_mvar = s_per_step
+            q_mvar = so_mvar
            
 
         try:
@@ -100,7 +100,8 @@ def build_shunts(
                 q_mvar     = q_mvar,          # positive = capacitive
                 p_mw       = 0.0,
                 name       = name,
-                in_service = step_in_service,
+                in_service = in_service,
+                step       = active_steps
             )
             # Store extra metadata as custom columns for reference
             net.shunt.at[idx, "b_pu_rated"]   = b_pu

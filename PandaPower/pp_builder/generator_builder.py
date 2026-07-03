@@ -32,6 +32,7 @@ from .config import (
     TECHNOLOGY_WIND, TECHNOLOGY_SOLAR, TECHNOLOGY_BATTERY, VOLTAGE_CONTROL_TECHS
 )
 from .excel_reader import _float, _bool, _str
+from .busbar_builder import voltage_reader
 
 # Technologies that should be modelled as PQ static generators
 _PQ_TECHNOLOGIES = {TECHNOLOGY_WIND, TECHNOLOGY_SOLAR, TECHNOLOGY_BATTERY}
@@ -82,7 +83,9 @@ def build_generators(
         bus_idx = bus_map[bus_name]
         p_mw    = _float(row, "P",  0.0)
         q_mvar  = _float(row, "Q",  0.0)
-        vm_pu   = _float(row, "Uszab",  1.0) / net.bus.at[bus_map[bus_name], "vn_kv"]
+        reg_bus_name = _str(row, "Szabpont", "")
+        vn_kv_reg_bus = voltage_reader(reg_bus_name)
+        vm_pu   = _float(row, "Uszab",  1.0) / vn_kv_reg_bus  # per-unit voltage setpoint
         sn_mva  = _float(row, "MVA", float("nan"))
         scaling = _get_scale(row, technology, season)
 
@@ -113,6 +116,7 @@ def build_generators(
             # Store technology for later use by apply_gen_scaling
             net.gen.at[idx, "technology"] = technology
             gen_map[name] = ("gen", idx)
+            
         else:
             idx = pp.create_sgen(
                 net,
@@ -141,6 +145,8 @@ def build_generators(
     n_gen  = sum(1 for v in gen_map.values() if v[0] == "gen")
     print(f"[generator_builder]  Created {n_gen} gen (PV) + "
           f"{n_sgen} sgen (PQ), season={season}.")
+    
+
     return gen_map
 
 

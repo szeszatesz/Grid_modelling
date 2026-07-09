@@ -17,6 +17,7 @@ from .excel_reader import _float, _bool, _str
 def build_busbars(
     net: pp.pandapowerNet,
     sheets: dict[str, pd.DataFrame],
+    coord_map: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, int]:
     """
     Create buses and external grids (slack nodes) from the Busbars sheet.
@@ -29,6 +30,11 @@ def build_busbars(
     df = sheets[SHEET_BUSBARS]
     bus_map: dict[str, int] = {}
     slack_buses: list[tuple[int, float]] = []  # (bus_idx, vm_pu)
+    skipped: list[str] = []
+
+    if coord_map is not None and "geodata" not in net.bus.columns:
+        net.bus["geodata"] = None
+        net.bus["geodata"] = net.bus["geodata"].astype(object)
 
     for _, row in df.iterrows():
         name       = _str(row, "Azonosító")
@@ -46,7 +52,18 @@ def build_busbars(
         )
         bus_map[name] = bus_idx
 
+        # ── Geodata ────────────────────────────────────────────────────────
+        if coord_map is not None:
+            lat, lon = coord_map.get(name, (None, None))
+            if lat is not None:
+                net.bus.at[bus_idx, "geodata"] = (lon, lat)   # pandapower: x = longitude, y = latitude
+            else:
+                skipped.append(name)
 
+    if skipped:
+        print(f"[busbar_builder]  No coordinates for {len(skipped)} bus(es): "
+              + ", ".join(skipped[:10]) + ("…" if len(skipped) > 10 else ""))
+        
     print(f"[busbar_builder]  Created {len(bus_map)} buses, "
           f"{len(slack_buses)} slack/ext_grid(s).")
     

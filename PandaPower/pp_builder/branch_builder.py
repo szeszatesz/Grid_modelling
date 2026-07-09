@@ -15,9 +15,11 @@ from __future__ import annotations
 import math
 import pandas as pd
 import pandapower as pp
+import json
 
 from .config import SHEET_BRANCHES, RATING_SEASON_SUMMER, RATING_SEASON_WINTER
 from .excel_reader import _float, _bool, _str
+from .geo_utils import load_line_geodata_from_eov
 
 
 def _mva_to_ka(mva: float, kv: float) -> float:
@@ -31,7 +33,8 @@ def build_branches(
     net: pp.pandapowerNet,
     sheets: dict[str, pd.DataFrame],
     bus_map: dict[str, int],
-    season: str = RATING_SEASON_SUMMER,
+    line_geo: dict[str, list[tuple[float, float]]],
+    season: str = RATING_SEASON_SUMMER,    
 ) -> dict[str, int]:
     """
     Create line elements from the Branches sheet.
@@ -50,6 +53,27 @@ def build_branches(
     df = sheets[SHEET_BRANCHES]
     branch_map: dict[str, int] = {}
     skipped: list[str] = []
+
+    coording = False
+    if coording:
+        coords = line_geo.get(line_name)
+
+        # Fallback: case-insensitive substring search
+        if coords is None:
+            name_lc = line_name.lower()
+            for k, v in line_geo.items():
+                if k.lower() in name_lc or name_lc in k.lower():
+                    coords = v
+                    break
+
+        if coords is None:
+            return
+
+        # pandapower stores line geodata as a JSON-encoded list of [lon, lat] pairs
+        # in net.line_geodata["coords"]
+        net.line_geodata.at[line_idx, "coords"] = json.dumps(
+            [[lon, lat] for lat, lon in coords]
+        )
 
     for _, row in df.iterrows():
         name       = _str(row, "Engedélyesi Azonosító")

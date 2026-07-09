@@ -3,6 +3,7 @@ network_builder.py — orchestrator that calls all sub-builders in order.
 """
 from __future__ import annotations
 from pathlib import Path
+import datetime
 
 import pandapower as pp
 import math
@@ -17,6 +18,8 @@ from pp_builder.load_builder       import build_loads
 from pp_builder.generator_builder  import build_generators
 from pp_builder.ext_grid_builder   import build_ext_grids
 from pp_builder.shunt_builder      import build_shunts
+
+from .geo_utils import load_bus_geodata, load_line_geodata_from_eov
 
 
 
@@ -55,6 +58,8 @@ class NetworkBuilder:
     def build(
         self,
         excel_path: str,
+        bus_geo_xlsx:     str  = None,   # ← Geo_Coordinates_busbars.xlsx
+        line_geo_csvs:    list[str] = None,  # ← list of EOV CSV files
         season: str = RATING_SEASON_SUMMER,
         output_dir: str | None = None,
         f_hz: float = 50.0,
@@ -67,6 +72,10 @@ class NetworkBuilder:
         ----------
         excel_path : str
             Path to the MAVIR Excel workbook.
+        bus_geo_xlsx : str, optional
+            Path to the Excel file containing bus geodata.
+        line_geo_csvs : list[str], optional
+            List of paths to CSV files containing line geodata.
         season : str
             Active seasonal rating: 'summer' or 'winter'.
         output_path : str, optional
@@ -86,16 +95,24 @@ class NetworkBuilder:
 
         sheets = read_excel(excel_path)
 
+                # ── Load coordinate data ───────────────────────────────────────────
+        coord_map = load_bus_geodata(bus_geo_xlsx) if bus_geo_xlsx else None
+
+        line_geo: dict[str, list] = {}
+        if line_geo_csvs:
+            for csv_path in line_geo_csvs:
+                line_geo.update(load_line_geodata_from_eov(csv_path))
+
         self.net = pp.create_empty_network(f_hz=f_hz, sn_mva=sn_mva)
 
-        self.bus_map   = build_busbars(self.net, sheets)
-        self.branch_map = build_branches(self.net, sheets, self.bus_map, season)
-        self.trafo_map  = build_transformers(self.net, sheets, self.bus_map)
+        self.bus_map   = build_busbars(self.net, sheets, coord_map=coord_map)
+        self.branch_map = build_branches(self.net, sheets, self.bus_map, line_geo=line_geo, season=season)
+        """self.trafo_map  = build_transformers(self.net, sheets, self.bus_map)
         self.trafo3w_map = build_transformers_3w(self.net, sheets, self.bus_map)
         self.load_map   = build_loads(self.net, sheets, self.bus_map)
-        self.gen_map    = build_generators(self.net, sheets, self.bus_map, season)
+        self.gen_map    = build_generators(self.net, sheets, self.bus_map, season=season)
         self.ext_grid_map = build_ext_grids(self.net, sheets, self.bus_map)
-        self.shunt_map = build_shunts(self.net, sheets, self.bus_map)
+        self.shunt_map = build_shunts(self.net, sheets, self.bus_map)"""
 
 
 
@@ -114,13 +131,15 @@ class NetworkBuilder:
         print(f"  Shunts        : {len(self.net.shunt)}")
         print(f"{'='*60}\n")
 
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
         if output_dir:
             out = Path(output_dir)
             out.mkdir(parents=True, exist_ok=True)
-            pp.to_json(self.net, out / 'rawmodel.json')
-            print(f"[NetworkBuilder]  Saved → {out / 'rawmodel.json'}")
+            pp.to_json(self.net, out / f'rawmodel_{timestamp}.json')
+            print(f"[NetworkBuilder]  Saved → {out / f'rawmodel_{timestamp}.json'}")
 
-        pp.drop_inactive_elements(self.net,respect_switches=True)
+        #pp.drop_inactive_elements(self.net,respect_switches=True)
 
         print(f"\n{'='*60}")
         print(f"Network summary:")
@@ -134,11 +153,13 @@ class NetworkBuilder:
         print(f"  Shunts        : {len(self.net.shunt)}")
         print(f"{'='*60}\n")
 
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
         if output_dir:
             out = Path(output_dir)
             out.mkdir(parents=True, exist_ok=True)
-            pp.to_json(self.net, out / 'model.json')
-            print(f"[NetworkBuilder]  Saved → {out / 'model.json'}")
+            pp.to_json(self.net, out / f'model_{timestamp}.json')
+            print(f"[NetworkBuilder]  Saved → {out / f'model_{timestamp}.json'}")
 
         return self.net
     

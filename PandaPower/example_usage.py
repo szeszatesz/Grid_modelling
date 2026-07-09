@@ -5,13 +5,17 @@ from pp_builder.network_visualiser import draw_network
 from pandapower.diagnostic.diagnostic_helpers import diagnostic
 from pandapower.diagnostic.diagnostic_functions import MultipleVoltageControllingElementsPerBus
 from pandapower import to_excel
+from pandapower.plotting.plotly import simple_plotly, vlevel_plotly
+import datetime
 
 # ── 1. Build the network ──────────────────────────────────────────────────────
 builder = NetworkBuilder()
-building = False
+building = True
 if building:
     net = builder.build(
         excel_path="PandaPower/2034sn_fp1_tv1_3_none-torf_de_all_v22_celallapot_zarlat_summer_small_load_increase.xlsx",
+        bus_geo_xlsx="PandaPower/input_data/Geo_Coordinates.xlsx",
+        line_geo_csvs=["PandaPower/input_data/GRIDMODELL/400kV_pont.csv"],
         season=RATING_SEASON_SUMMER,
         output_dir="/home/attilas/Grid_modelling/PandaPower/models",
     )
@@ -19,7 +23,7 @@ if building:
 else:
     net = builder.load("PandaPower/models/model.json")
 
-
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 diagnose = False
 if diagnose:
@@ -32,10 +36,13 @@ if diagnose:
     diagnostic(net)
 
 # ── 3. Draw the network ───────────────────────────────────────────────────────
-#draw_network(net, output_path="network.png", show_labels=True)
+
+#draw_network(net, output_path="network_bus_cord.png", show_labels=True)
+#simple_plotly(net)
+vlevel_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=1, line_width=1, respect_switches=True, zoomlevel=8)
 
 # ── 4. Summer load flow ───────────────────────────────────────────────────────
-exe_lf = True
+exe_lf = False
 if exe_lf:
     runner = LoadFlowRunner(net)
     ok = runner.run(

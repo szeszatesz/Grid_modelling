@@ -6,8 +6,10 @@ from pathlib import Path
 import datetime
 
 import pandapower as pp
+from pandapower import to_excel
 import math
 
+from pp_builder.geo_placement import place_unknown_buses
 from pp_builder.config import RATING_SEASON_SUMMER
 from pp_builder.excel_reader import read_excel
 from pp_builder.busbar_builder     import build_busbars
@@ -107,12 +109,17 @@ class NetworkBuilder:
 
         self.bus_map   = build_busbars(self.net, sheets, coord_map=coord_map)
         self.branch_map = build_branches(self.net, sheets, self.bus_map, line_geo=line_geo, season=season)
-        """self.trafo_map  = build_transformers(self.net, sheets, self.bus_map)
+        self.trafo_map  = build_transformers(self.net, sheets, self.bus_map)
         self.trafo3w_map = build_transformers_3w(self.net, sheets, self.bus_map)
-        self.load_map   = build_loads(self.net, sheets, self.bus_map)
+        """self.load_map   = build_loads(self.net, sheets, self.bus_map)
         self.gen_map    = build_generators(self.net, sheets, self.bus_map, season=season)
         self.ext_grid_map = build_ext_grids(self.net, sheets, self.bus_map)
         self.shunt_map = build_shunts(self.net, sheets, self.bus_map)"""
+
+        
+        # ── Second-pass geo placement ──────────────────────────────────
+        if coord_map is not None:
+            place_unknown_buses(self.net, skip_prefix="X")
 
 
 
@@ -160,6 +167,8 @@ class NetworkBuilder:
             out.mkdir(parents=True, exist_ok=True)
             pp.to_json(self.net, out / f'model_{timestamp}.json')
             print(f"[NetworkBuilder]  Saved → {out / f'model_{timestamp}.json'}")
+
+        to_excel(self.net, f"PandaPower/models/model_{timestamp}.xlsx", include_results=True, include_empty_tables=True)
 
         return self.net
     

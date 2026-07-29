@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from datetime import datetime
 
 
 
@@ -199,3 +200,37 @@ def load_line_geodata_from_eov(
 
     print(f"[geo_utils]  Loaded {len(geo)} line route(s) from EOV CSV.")
     return geo
+
+
+
+def save_placed_buses_to_excel(
+    placed_records: list[dict],
+    output_dir: str = "output",
+    file_name: str | None = None,
+) -> str:
+    """
+    Save the placed-bus records (from place_unknown_buses) to an Excel file.
+
+    Returns
+    -------
+    str : path to the saved file
+    """
+    if not placed_records:
+        print("[geo_placement]  No placed buses to save.")
+        return ""
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if file_name is None:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_name = f"placed_buses_{ts}.xlsx"
+
+    out_path = out_dir / file_name
+
+    df = pd.DataFrame(placed_records)
+    df = df[["bus_idx", "name", "strategy", "lon", "lat", "nb1", "nb2"]]
+    df.to_excel(out_path, index=False, sheet_name="placed_buses")
+
+    print(f"[geo_placement]  Saved {len(df)} placed buses → {out_path}")
+    return str(out_path)

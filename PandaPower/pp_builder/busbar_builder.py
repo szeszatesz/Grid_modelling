@@ -48,9 +48,6 @@ def build_busbars(
             _coord_index[cname[:5]].append((cname, clat, clon, cvn))
 
     
-    total_entries = sum(len(v) for v in _coord_index.values())
-    print(f"Unique prefixes : {len(_coord_index)}")
-    print(f"Total entries   : {total_entries}")   # should be 888
     # ── per-bus geodata assignment ─────────────────
 
     # Small layout offsets (degrees) — adjust to taste
@@ -61,6 +58,7 @@ def build_busbars(
     # so each new one gets a slightly larger nudge.
     _nudge_counter: dict[str, int] = defaultdict(int)
     exact_match = 0
+    
 
     for _, row in df.iterrows():
         name       = _str(row, "Azonosító")
@@ -69,9 +67,9 @@ def build_busbars(
         vm_pu      = _float(row, "U", 1.0) / vn_kv   # optional column
 
         if coord_map is not None:
-            lat, lon = coord_map.get(name, (48.7071054341234, 21.2441692731272))
+            lat, lon = coord_map.get(name, (48.7, 21.25))
 
-        if lat != 48.7071054341234:
+        if lat != 48.7:
             # ── exact match ───────────────────────────────────────────────────
             exact_match += 1
 

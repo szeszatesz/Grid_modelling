@@ -21,8 +21,7 @@ from pp_builder.generator_builder  import build_generators
 from pp_builder.ext_grid_builder   import build_ext_grids
 from pp_builder.shunt_builder      import build_shunts
 
-from .geo_utils import load_bus_geodata, load_line_geodata_from_eov
-
+from .geo_utils import load_bus_geodata, load_line_geodata_from_eov, save_placed_buses_to_excel
 
 
 
@@ -111,16 +110,12 @@ class NetworkBuilder:
         self.branch_map = build_branches(self.net, sheets, self.bus_map, line_geo=line_geo, season=season)
         self.trafo_map  = build_transformers(self.net, sheets, self.bus_map)
         self.trafo3w_map = build_transformers_3w(self.net, sheets, self.bus_map)
-        """self.load_map   = build_loads(self.net, sheets, self.bus_map)
+        self.load_map   = build_loads(self.net, sheets, self.bus_map)
         self.gen_map    = build_generators(self.net, sheets, self.bus_map, season=season)
         self.ext_grid_map = build_ext_grids(self.net, sheets, self.bus_map)
-        self.shunt_map = build_shunts(self.net, sheets, self.bus_map)"""
+        self.shunt_map = build_shunts(self.net, sheets, self.bus_map)
 
         
-        # ── Second-pass geo placement ──────────────────────────────────
-        if coord_map is not None:
-            place_unknown_buses(self.net, skip_prefix="X")
-
 
 
         #check_trafo_impedance(self.net)
@@ -146,7 +141,7 @@ class NetworkBuilder:
             pp.to_json(self.net, out / f'rawmodel_{timestamp}.json')
             print(f"[NetworkBuilder]  Saved → {out / f'rawmodel_{timestamp}.json'}")
 
-        #pp.drop_inactive_elements(self.net,respect_switches=True)
+        pp.drop_inactive_elements(self.net,respect_switches=True)
 
         print(f"\n{'='*60}")
         print(f"Network summary:")
@@ -162,13 +157,18 @@ class NetworkBuilder:
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
+                # ── Second-pass geo placement ──────────────────────────────────
+        if coord_map is not None:
+            placed_busses = place_unknown_buses(self.net, skip_prefix="X")
+        save_placed_buses_to_excel(placed_busses, output_dir="PandaPower/input_data")
+
         if output_dir:
             out = Path(output_dir)
             out.mkdir(parents=True, exist_ok=True)
             pp.to_json(self.net, out / f'model_{timestamp}.json')
             print(f"[NetworkBuilder]  Saved → {out / f'model_{timestamp}.json'}")
 
-        to_excel(self.net, f"PandaPower/models/model_{timestamp}.xlsx", include_results=True, include_empty_tables=True)
+        to_excel(self.net, f"PandaPower/models/model_{timestamp}.xlsx", include_results=True, include_empty_tables=False)
 
         return self.net
     

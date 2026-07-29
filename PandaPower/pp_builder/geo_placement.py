@@ -124,7 +124,7 @@ def place_unknown_buses(net: pp.pandapowerNet, skip_prefix: str = "X") -> None:
     # Identify unknown buses (skip external grid border buses)
     unknown = [
         idx for idx in net.bus.index
-        if _get_xy(net, idx) == (21.2441692731272, 48.7071054341234)
+        if _get_xy(net, idx) == (21.25, 48.7)
         and not str(net.bus.at[idx, "name"]).startswith(skip_prefix)
     ]
 
@@ -140,15 +140,17 @@ def place_unknown_buses(net: pp.pandapowerNet, skip_prefix: str = "X") -> None:
     # Iterate until no more placements are possible (resolves chains)
     max_passes = 20
     placed_total = 0
+    placed_records: list[dict] = []
 
     for pass_no in range(max_passes):
         placed_this_pass = 0
-        still_unknown = [i for i in unknown if _get_xy(net, i) == (21.2441692731272, 48.7071054341234) and not str(net.bus.at[i, "name"]).startswith(skip_prefix)]
+        still_unknown = [i for i in unknown if _get_xy(net, i) == (21.25, 48.7) and not str(net.bus.at[i, "name"]).startswith(skip_prefix)]
 
         if not still_unknown:
             break
 
         for bus_idx in still_unknown:
+            name = str(net.bus.at[bus_idx, "name"])
 
             # ── Strategy 1: interpolate along a line ──────────────────────
             # Find all line-neighbours that already have coordinates
@@ -156,6 +158,7 @@ def place_unknown_buses(net: pp.pandapowerNet, skip_prefix: str = "X") -> None:
                 (nb, r) for nb, r in line_adj.get(bus_idx, [])
                 if _has_xy(net, nb)
             ]
+            
 
             if len(known_line_neighbours) >= 2:
                 # Use the two neighbours with smallest r_pu (most direct path)
@@ -164,6 +167,8 @@ def place_unknown_buses(net: pp.pandapowerNet, skip_prefix: str = "X") -> None:
                 nb2, r2 = known_line_neighbours[1]
                 x1, y1  = _get_xy(net, nb1)
                 x2, y2  = _get_xy(net, nb2)
+                nb1_name = str(net.bus.at[nb1, "name"])
+                nb2_name = str(net.bus.at[nb2, "name"])
 
                 # Weight: t = r1 / (r1 + r2)  →  position along nb1→nb2
                 t   = r1 / (r1 + r2)
@@ -171,26 +176,47 @@ def place_unknown_buses(net: pp.pandapowerNet, skip_prefix: str = "X") -> None:
                 lat = y1 + t * (y2 - y1)
                 _set_xy(net, bus_idx, lon, lat)
                 placed_this_pass += 1
+                placed_records.append({
+                    "bus_idx":  bus_idx,
+                    "name":     name,
+                    "strategy": "line_interpolation_2neighbours",
+                    "lon":      lon,
+                    "lat":      lat,
+                    "nb1":      nb1_name,
+                    "nb2":      nb2_name
+                })
                 continue
 
             elif len(known_line_neighbours) == 1:
                 # Only one known line endpoint — place near it with small offset
                 nb, _ = known_line_neighbours[0]
                 x0, y0 = _get_xy(net, nb)
+                nb_name = str(net.bus.at[nb, "name"])
                 # Nudge slightly east so it is visible
                 _set_xy(net, bus_idx, x0 + 0.001, y0)
                 placed_this_pass += 1
+                placed_records.append({
+                    "bus_idx":  bus_idx,
+                    "name":     name,
+                    "strategy": "line_nudge_1neighbour",
+                    "lon":      lon,
+                    "lat":      lat,
+                    "nb1":      nb_name,
+                    "nb2":      "none"
+                })
                 continue
 
             # ── Strategy 2: place relative to trafo-connected known bus ───
             known_trafo_neighbours = [
                 nb for nb in trafo_adj.get(bus_idx, [])
                 if _has_xy(net, nb)
+            
             ]
 
             if known_trafo_neighbours:
                 ref_bus = known_trafo_neighbours[0]
                 ref_x, ref_y = _get_xy(net, ref_bus)
+                ref_bus_name = str(net.bus.at[ref_bus, "name"])
 
                 vn_self = float(net.bus.at[bus_idx, "vn_kv"])
                 vn_ref  = float(net.bus.at[ref_bus,  "vn_kv"])
@@ -206,24 +232,37 @@ def place_unknown_buses(net: pp.pandapowerNet, skip_prefix: str = "X") -> None:
                     direction = 1 if already_placed % 2 == 0 else -1
                     lon = ref_x + direction * _TRAFO_H_STEP * (already_placed // 2 + 1)
                     lat = ref_y
+                    strategy = "trafo_horizontal_same_vn"
                 else:
                     # Different voltage — stack vertically
                     sign = 1.0 if vn_self > vn_ref else -1.0
                     lon  = ref_x
                     lat  = ref_y + sign * _TRAFO_V_STEP * (already_placed + 1)
+                    strategy = "trafo_vertical_diff_vn"
 
                 _set_xy(net, bus_idx, lon, lat)
                 placed_this_pass += 1
+                placed_records.append({
+                    "bus_idx":  bus_idx,
+                    "name":     name,
+                    "strategy": strategy,
+                    "lon":      lon,
+                    "lat":      lat,
+                    "nb1":      ref_bus_name,
+                    "nb2":      "none"
+                })
                 continue
 
         placed_total += placed_this_pass
         if placed_this_pass == 0:
             break  # no progress — remaining buses are fully isolated
 
-    still_unknown = [i for i in unknown if _get_xy(net, i) == (21.2441692731272, 48.7071054341234) and not str(net.bus.at[i, "name"]).startswith(skip_prefix)]
+    still_unknown = [i for i in unknown if _get_xy(net, i) == (21.25, 48.7) and not str(net.bus.at[i, "name"]).startswith(skip_prefix)]
     print(f"[geo_placement]  Placed {placed_total} buses in {pass_no + 1} pass(es).")
     if still_unknown:
         names = [str(net.bus.at[i, "name"]) for i in still_unknown[:10]]
         print(f"[geo_placement]  {len(still_unknown)} buses still without coords "
               f"(isolated / no topology path): {', '.join(names)}"
               + ("…" if len(still_unknown) > 10 else ""))
+
+    return placed_records

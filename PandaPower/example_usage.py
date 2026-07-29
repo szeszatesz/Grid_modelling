@@ -2,11 +2,12 @@ from pp_builder import NetworkBuilder, LoadFlowRunner
 from pp_builder.config import RATING_SEASON_SUMMER, RATING_SEASON_WINTER
 from pp_builder.network_topology import report_islands
 from pp_builder.network_visualiser import draw_network
+from pandapower import to_excel, to_excel_with_names
 from pandapower.diagnostic.diagnostic_helpers import diagnostic
 from pandapower.diagnostic.diagnostic_functions import MultipleVoltageControllingElementsPerBus
-from pandapower import to_excel
-from pandapower.plotting.plotly import simple_plotly, vlevel_plotly
+from pandapower.plotting.plotly import simple_plotly, vlevel_plotly, pf_res_plotly
 import datetime
+
 
 # ── 1. Build the network ──────────────────────────────────────────────────────
 builder = NetworkBuilder()
@@ -19,9 +20,8 @@ if building:
         season=RATING_SEASON_SUMMER,
         output_dir="/home/attilas/Grid_modelling/PandaPower/models",
     )
-    to_excel(net, "PandaPower/models/model.xlsx", include_results=True, include_empty_tables=True)
 else:
-    net = builder.load("PandaPower/models/model.json")
+    net = builder.load("PandaPower/models/model_20260727_142428.json")
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -35,14 +35,10 @@ if diagnose:
 
     diagnostic(net)
 
-# ── 3. Draw the network ───────────────────────────────────────────────────────
 
-#draw_network(net, output_path="network_bus_cord.png", show_labels=True)
-#simple_plotly(net)
-vlevel_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=1, line_width=1, respect_switches=True, zoomlevel=8)
 
 # ── 4. Summer load flow ───────────────────────────────────────────────────────
-exe_lf = False
+exe_lf = True
 if exe_lf:
     runner = LoadFlowRunner(net)
     ok = runner.run(
@@ -56,15 +52,21 @@ if exe_lf:
     )
     if ok:
         runner.print_summary()
-        overloads = runner.overloaded_lines()
+        overloads = runner.overloaded_lines(threshold_pu=1.1)
         print(f"Overloaded lines:\n{overloads.to_string(index=False)}")
-        to_excel(net, "PandaPower/models/modelwithLF_v1.xlsx", include_results=True, include_empty_tables=True)
+        to_excel_with_names(net, filename=f"PandaPower/models/modelwithLF_{timestamp}.xlsx", include_empty_tables=False)
 
-    ok = runner.run(
+    """ok = runner.run(
         season=RATING_SEASON_WINTER,
         load_scale=0.90,
     )
     if ok:
         runner.print_summary()
-        to_excel(net, "PandaPower/models/modelwithLF_v2.xlsx", include_results=True, include_empty_tables=True)
+        to_excel(net, filename=f"PandaPower/models/modelwithLF_{timestamp}.xlsx", include_results=True, include_empty_tables=False)"""
 
+# ── 3. Draw the network ───────────────────────────────────────────────────────
+
+#draw_network(net, output_path="network_bus_cord.png", show_labels=True)
+#simple_plotly(net,filename=f"PandaPower/models/network_simple_plotly_{timestamp}.html")
+vlevel_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=10, line_width=1, respect_switches=False, zoomlevel=8, use_line_geo=False, on_map=False, map_style='basic', projection='23700')
+#pf_res_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=10, line_width=1, zoomlevel=8, use_line_geo=False, on_map=True, map_style='basic')

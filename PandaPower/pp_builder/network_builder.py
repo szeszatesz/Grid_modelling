@@ -7,17 +7,18 @@ import datetime
 
 import pandapower as pp
 from pandapower import to_excel
+from pandas import read_excel
 import math
 
 from pp_builder.geo_placement import place_unknown_buses
 from pp_builder.config import RATING_SEASON_SUMMER
-from pp_builder.excel_reader import read_excel
+from pp_builder.excel_reader import read_excelsheets
 from pp_builder.busbar_builder     import build_busbars
 from pp_builder.branch_builder     import build_branches
 from pp_builder.transformer_2w_builder import build_transformers
 from pp_builder.transformer_3w_builder import build_transformers_3w
 from pp_builder.load_builder       import build_loads
-from pp_builder.generator_builder  import build_generators
+from pp_builder.generator_builder_v8 import build_generators, build_mekh_generators, build_hmke_generators
 from pp_builder.ext_grid_builder   import build_ext_grids
 from pp_builder.shunt_builder      import build_shunts
 
@@ -59,6 +60,8 @@ class NetworkBuilder:
     def build(
         self,
         excel_path: str,
+        MEKH_excel_path: str,
+        HMKE_excel_path: str,
         bus_geo_xlsx:     str  = None,   # ← Geo_Coordinates_busbars.xlsx
         line_geo_csvs:    list[str] = None,  # ← list of EOV CSV files
         season: str = RATING_SEASON_SUMMER,
@@ -94,7 +97,8 @@ class NetworkBuilder:
         print(f"NetworkBuilder: reading {excel_path!r} (season={season})")
         print(f"{'='*60}")
 
-        sheets = read_excel(excel_path)
+        sheets = read_excelsheets(excel_path)
+        MEKH_list = read_excel(MEKH_excel_path, sheet_name="Table 1", header=1)
 
                 # ── Load coordinate data ───────────────────────────────────────────
         coord_map = load_bus_geodata(bus_geo_xlsx) if bus_geo_xlsx else None
@@ -112,6 +116,8 @@ class NetworkBuilder:
         self.trafo3w_map = build_transformers_3w(self.net, sheets, self.bus_map)
         self.load_map   = build_loads(self.net, sheets, self.bus_map)
         self.gen_map    = build_generators(self.net, sheets, self.bus_map, season=season)
+        self.gen_map.update(build_mekh_generators(self.net, MEKH_list, self.bus_map, season=season))
+        self.gen_map.update(build_hmke_generators(self.net, HMKE_excel_path, self.bus_map, season=season))
         self.ext_grid_map = build_ext_grids(self.net, sheets, self.bus_map)
         self.shunt_map = build_shunts(self.net, sheets, self.bus_map)
 
@@ -160,7 +166,7 @@ class NetworkBuilder:
                 # ── Second-pass geo placement ──────────────────────────────────
         if coord_map is not None:
             placed_busses = place_unknown_buses(self.net, skip_prefix="X")
-        save_placed_buses_to_excel(placed_busses, output_dir="PandaPower/input_data")
+        #save_placed_buses_to_excel(placed_busses, output_dir="PandaPower/input_data")
 
         if output_dir:
             out = Path(output_dir)

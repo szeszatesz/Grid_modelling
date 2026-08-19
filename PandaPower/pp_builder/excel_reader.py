@@ -15,7 +15,7 @@ class ExcelReaderError(ValueError):
     """Raised when the workbook fails validation."""
 
 
-def read_excel(path: str) -> dict[str, pd.DataFrame]:
+def read_excelsheets(path: str) -> dict[str, pd.DataFrame]:
     """
     Read all builder sheets from *path* and return a validated dict.
 

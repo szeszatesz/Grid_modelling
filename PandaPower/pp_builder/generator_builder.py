@@ -16,7 +16,13 @@ Data sources
   loaded from the MEKH connection-capacity list ("MEKH production projects"
   workbook) via build_mekh_generators(), NOT from the MAVIR sheet.
   Solar/wind/battery rows found in the MAVIR sheet are skipped with a
-  warning so the two sources are never double-counted.
+  warning so the two sources are never double-counted. Matching is done
+  against the RAW MAVIR "Technológia" label set
+  (_MAVIR_RAW_SOLAR_WIND_BATTERY_LABELS — e.g. 'SOLARPHOTOVO',
+  'ROOFTOPPV', 'WINDONSHORE', 'BATTERYSTRG'), NOT against the internal
+  TECHNOLOGY_SOLAR/WIND/BATTERY constants (those are only ever assigned
+  to elements created by the MEKH/HMKE builders and never appear as raw
+  MAVIR sheet values — comparing against them silently fails to match).
 * Among MEKH-sourced renewables/battery units, any unit with installed
   capacity above 5 MW is modelled as voltage-controllable (pp.create_gen,
   PV node) rather than a plain PQ injection, with reactive power limits
@@ -102,7 +108,7 @@ substation happens to be nearest the city's geocoded centroid is
 physically unrealistic (e.g. Budapest ≈260 MW, Debrecen ≈68 MW in the
 2025 data) and would create an artificial concentration of injected power.
 
-To address this, build_hmke_generators() now applies proportional
+To address this, build_hmke_generators() applies proportional
 multi-substation distribution to any municipality whose total 2025 HMKE
 capacity exceeds _HMKE_MULTI_SUBSTATION_THRESHOLD_MW (default 5 MW):
   1. A search radius is derived from installed capacity via
@@ -184,6 +190,30 @@ _PQ_TECHNOLOGIES = {TECHNOLOGY_WIND, TECHNOLOGY_SOLAR, TECHNOLOGY_BATTERY}
 
 # These are now sourced exclusively from the MEKH list, never from MAVIR.
 _MEKH_ONLY_TECHNOLOGIES = {TECHNOLOGY_WIND, TECHNOLOGY_SOLAR, TECHNOLOGY_BATTERY}
+
+# The MAVIR "Generators" sheet's raw "Technológia" column uses a DIFFERENT
+# label set than the internal TECHNOLOGY_SOLAR/WIND/BATTERY constants above
+# (those are only ever assigned to MEKH-sourced elements created by this
+# module). Comparing raw MAVIR labels directly against the internal
+# constants silently fails to match, letting solar/wind/battery rows slip
+# through from MAVIR uncaught — this is the actual raw label set observed
+# in the MAVIR sheet and must be kept in sync with it. Matching is
+# case-insensitive and whitespace-trimmed.
+_MAVIR_RAW_SOLAR_WIND_BATTERY_LABELS = {
+    "SOLARPHOTOVO",   # utility-scale / ground-mounted solar PV
+    "ROOFTOPPV",      # rooftop solar PV
+    "WINDONSHORE",    # onshore wind
+    "WINDOFFSHORE",   # offshore wind (not expected in HU data, kept for safety)
+    "BATTERYSTRG",    # battery storage
+}
+
+
+def _is_mavir_solar_wind_battery(raw_technology: str) -> bool:
+    """True if a raw MAVIR 'Technológia' value denotes solar, wind or
+    battery generation (i.e. should be skipped from build_generators()
+    since it is sourced from the MEKH list instead)."""
+    return raw_technology.strip().upper() in _MAVIR_RAW_SOLAR_WIND_BATTERY_LABELS
+
 
 # MEKH sheet — column positions (0-indexed) per the header row (row 2 in
 # Excel, i.e. header=1 when read with pandas).
@@ -824,7 +854,9 @@ def build_generators(
 
     Solar, wind and battery rows are skipped here — they are loaded
     separately from the MEKH list via build_mekh_generators(), so they
-    are not double-counted.
+    are not double-counted. Matched against the RAW MAVIR "Technológia"
+    label set (_MAVIR_RAW_SOLAR_WIND_BATTERY_LABELS), not the internal
+    TECHNOLOGY_SOLAR/WIND/BATTERY constants.
 
     Returns
     -------
@@ -844,8 +876,15 @@ def build_generators(
         technology = _str(row, "Technológia", "gas")
         in_service = _bool(row, "Bent", True)
 
-        if technology in _MEKH_ONLY_TECHNOLOGIES:
+        if _is_mavir_solar_wind_battery(technology):
             # Solar/wind/battery now come exclusively from the MEKH list.
+            # NOTE: matched against the raw MAVIR label set
+            # (_MAVIR_RAW_SOLAR_WIND_BATTERY_LABELS), NOT the internal
+            # TECHNOLOGY_SOLAR/WIND/BATTERY constants — those constants are
+            # only ever assigned to MEKH/HMKE-created elements and never
+            # match the raw MAVIR "Technológia" column values (e.g.
+            # 'SOLARPHOTOVO', 'ROOFTOPPV'), which was the root cause of
+            # these rows previously slipping through unfiltered.
             mekh_sourced.append(f"{name} (technology='{technology}')")
             continue
 

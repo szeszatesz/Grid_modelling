@@ -18,7 +18,7 @@ from pp_builder.branch_builder     import build_branches
 from pp_builder.transformer_2w_builder import build_transformers
 from pp_builder.transformer_3w_builder import build_transformers_3w
 from pp_builder.load_builder       import build_loads, scale_loads_to_target
-from pp_builder.generator_builder_v8 import build_generators, build_mekh_generators, build_hmke_generators
+from pp_builder.generator_builder import build_generators, build_mekh_generators, build_hmke_generators
 from pp_builder.ext_grid_builder   import build_ext_grids
 from pp_builder.shunt_builder      import build_shunts
 

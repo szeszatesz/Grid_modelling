@@ -15,7 +15,7 @@ building = True
 if building:
     net = builder.build(
         excel_path="PandaPower/input_data/2034sn_fp1_tv1_3_none-torf_de_all_v22_celallapot_zarlat_summer_small_load_increase.xlsx",
-        MEKH_excel_path="PandaPower/input_data/2026-04-30_MEKH_production_projects.xlsx",
+        MEKH_excel_path="PandaPower/input_data/2026-07-30_RES_above_500kW_production_projects.xlsx",
         HMKE_excel_path="PandaPower/input_data/HMKE_2025_Statisztika.xlsx",
         bus_geo_xlsx="PandaPower/input_data/Geo_Coordinates.xlsx",
         line_geo_csvs=["PandaPower/input_data/GRIDMODELL/400kV_pont.csv"],

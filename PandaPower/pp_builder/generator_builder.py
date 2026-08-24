@@ -12,6 +12,10 @@ Data sources
 ------------
 * Dispatchable / conventional generators (gas, hydro, coal, nuclear, etc.)
   are still loaded from the MAVIR "Generators" sheet via build_generators().
+  Every gen/sgen created from this sheet is tagged source="MAVIR" (a
+  "source" column, mirroring the "source" tag used for MEKH/HMKE-created
+  elements), so all three origins can be distinguished downstream by a
+  single column instead of having to infer origin from technology/name.
 * Weather-dependent generation — solar, wind and battery storage — is
   loaded from the MEKH connection-capacity list ("MEKH production projects"
   workbook) via build_mekh_generators(), NOT from the MAVIR sheet.
@@ -28,6 +32,14 @@ Data sources
   PV node) rather than a plain PQ injection, with reactive power limits
   of +/- 30% of its rated (sn_mva) capacity, per grid-code requirements.
   Units at or below 5 MW remain PQ (pp.create_sgen).
+* MEKH connection points not yet in service have a future connection date
+  in column J ("... legkorábbi igénybevételi időpontja" — earliest date
+  the grid connection may be utilized). Rows whose column-J date falls
+  AFTER 2035-12-31 are treated as too speculative/far out to model and are
+  skipped entirely (both the generation and any co-located battery
+  capacity on that row) — see "Future connection date filtering" below.
+  Rows with no date in column J (already in service, or no committed
+  date) are NOT skipped by this rule.
 * Small-scale household PV ("HMKE" — Háztartási Méretű Kiserőmű) is loaded
   separately via build_hmke_generators() from the HMKE municipal
   statistics workbook, aggregated per substation. These are always
@@ -71,12 +83,38 @@ MEKH sheet column mapping (0-indexed / Excel letter)
                technology: "akkumulátor" = battery, "egyéb"/others
                currently mapped to generic "storage", "nem értelmezhető"
                = no storage at this connection point.
+  J (col 9) — "Üzembe helyezés előtt álló csatlakozási pont esetén a
+               hálózati csatlakozás legkorábbi igénybevételi időpontja"
+               → earliest date the connection may be commissioned, for
+               points not yet in service. NaN/blank for points already in
+               service (or without a committed date). Rows with a date
+               after _MEKH_MAX_CONNECTION_YEAR (2035) are skipped — see
+               "Future connection date filtering" below.
 
 A single MEKH row can contain BOTH a generation capacity (col E, solar or
 wind) AND a storage capacity (col F, battery) at the same connection point.
 Such rows are split into two separate sgen/gen elements — one for the
 generation technology, one for the battery — each keeping the shared
 substation/voltage metadata.
+
+Future connection date filtering (MEKH)
+------------------------------------------
+Column J gives the earliest date a not-yet-commissioned connection point
+may be utilized. Many entries carry a placeholder-like far-future date
+(e.g. 2050-01-01) representing long-term/speculative reservations rather
+than concrete near-term projects. Modelling these alongside firm,
+near-term capacity would overstate expected renewable/battery buildout.
+
+_parse_mekh_connection_date() parses column J (already a datetime in the
+source workbook, but parsed defensively in case it's read as text).
+Rows whose parsed date falls after 2035-12-31
+(_MEKH_MAX_CONNECTION_YEAR) are skipped entirely, for BOTH the
+generation (col E) and battery (col F) elements on that row, since a
+future connection point that won't be built until after 2035 has no firm
+grid capacity to model. Rows with no date (blank/NaN) are NOT
+skipped by this rule — an empty column J means either the point is
+already in service, or has no committed future date, neither of which
+implies "distant future" on its own.
 
 Substation matching strategy (MEKH and HMKE)
 ----------------------------------------------
@@ -215,6 +253,12 @@ def _is_mavir_solar_wind_battery(raw_technology: str) -> bool:
     return raw_technology.strip().upper() in _MAVIR_RAW_SOLAR_WIND_BATTERY_LABELS
 
 
+# Source tag stored on every gen/sgen row created by build_generators(),
+# mirroring the "source" tag used for MEKH- and HMKE-created elements so
+# the origin of any generator/sgen can always be read from one column.
+_MAVIR_SOURCE_TAG = "MAVIR"
+
+
 # MEKH sheet — column positions (0-indexed) per the header row (row 2 in
 # Excel, i.e. header=1 when read with pandas).
 _MEKH_COL_MUNICIPALITY    = 0  # A
@@ -225,6 +269,7 @@ _MEKH_COL_CAPACITY_STORE  = 5  # F — storage capacity (MVA)
 _MEKH_COL_VOLTAGE_LEVEL   = 6  # G
 _MEKH_COL_ENERGY_SOURCE   = 7  # H — "nap" / "szél" / "nem értelmezhető"
 _MEKH_COL_STORAGE_TECH    = 8  # I — "akkumulátor" / "egyéb" / "nem értelmezhető"
+_MEKH_COL_CONNECTION_DATE = 9  # J — earliest future grid-connection utilization date
 
 _NOT_APPLICABLE = "nem értelmezhető"
 
@@ -236,6 +281,44 @@ _ENERGY_SOURCE_MAP = {
 _STORAGE_TECH_MAP = {
     "akkumulátor": TECHNOLOGY_BATTERY,
 }
+
+# Rows in the MEKH sheet whose column-J connection date (col J, "earliest
+# utilization date for a not-yet-commissioned connection point") falls
+# after December 31 of this year are skipped entirely (too far out /
+# speculative to model) — see "Future connection date filtering" in the
+# module docstring. Rows with no date in column J are NOT affected by
+# this rule.
+_MEKH_MAX_CONNECTION_YEAR = 2035
+
+
+def _parse_mekh_connection_date(value) -> pd.Timestamp | None:
+    """Parse the MEKH column-J future-connection-date value into a
+    pandas Timestamp, defensively handling it already being a
+    datetime/Timestamp (typical when read via pandas.read_excel with a
+    real Excel date cell) as well as a string fallback. Returns None for
+    blank/NaN/unparseable values."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value
+    try:
+        parsed = pd.to_datetime(value, errors="coerce", dayfirst=False)
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(parsed):
+        return None
+    return parsed
+
+
+def _is_mekh_connection_too_far_future(connection_date: pd.Timestamp | None) -> bool:
+    """True if a parsed MEKH column-J connection date falls after
+    _MEKH_MAX_CONNECTION_YEAR (2035) — such rows are skipped entirely.
+    A missing date (None) is NOT considered too-far-future — it means
+    the point is already in service or has no committed date."""
+    if connection_date is None:
+        return False
+    return connection_date.year > _MEKH_MAX_CONNECTION_YEAR
+
 
 # Number of leading characters used to match a MEKH substation name against
 # the pandapower bus name prefix (bus names look like
@@ -852,6 +935,11 @@ def build_generators(
     """
     Create gen / sgen elements from the Generators sheet (MAVIR source).
 
+    Every element created here is tagged source="MAVIR" (net.gen/sgen
+    "source" column), mirroring the tagging used for MEKH- and
+    HMKE-created elements, so all three data sources can be distinguished
+    downstream from a single column.
+
     Solar, wind and battery rows are skipped here — they are loaded
     separately from the MEKH list via build_mekh_generators(), so they
     are not double-counted. Matched against the RAW MAVIR "Technológia"
@@ -930,6 +1018,7 @@ def build_generators(
             )
             # Store technology for later use by apply_gen_scaling
             net.gen.at[idx, "technology"] = technology
+            net.gen.at[idx, "source"] = _MAVIR_SOURCE_TAG
             gen_map[name] = ("gen", idx)
 
         else:
@@ -946,6 +1035,7 @@ def build_generators(
             )
             # Store technology for later use by apply_gen_scaling
             net.sgen.at[idx, "technology"] = technology
+            net.sgen.at[idx, "source"] = _MAVIR_SOURCE_TAG
             gen_map[name] = ("sgen", idx)
 
     if skipped:
@@ -962,7 +1052,7 @@ def build_generators(
     n_sgen = sum(1 for v in gen_map.values() if v[0] == "sgen")
     n_gen  = sum(1 for v in gen_map.values() if v[0] == "gen")
     print(f"[generator_builder]  Created {n_gen} gen (PV) + "
-          f"{n_sgen} sgen (PQ), season={season}.")
+          f"{n_sgen} sgen (PQ), source='{_MAVIR_SOURCE_TAG}', season={season}.")
 
     return gen_map
 
@@ -978,6 +1068,11 @@ def build_mekh_generators(
     """
     Create gen/sgen elements (solar, wind, battery) from the MEKH
     connection capacity list.
+
+    Rows whose column-J future connection date falls after
+    _MEKH_MAX_CONNECTION_YEAR (2035) are skipped entirely — see "Future
+    connection date filtering" in the module docstring. Rows with no date
+    in column J are not affected by this rule.
 
     Substation resolution happens in two stages per row:
       1. Prefix match on the first 5 characters of the substation name
@@ -1020,6 +1115,7 @@ def build_mekh_generators(
     gen_map: dict[str, tuple[str, int]] = {}
     skipped: list[str] = []
     geo_resolved: list[str] = []
+    future_skipped: list[str] = []
 
     cols = mekh_df.columns.tolist()
     col_municipality = cols[_MEKH_COL_MUNICIPALITY]
@@ -1030,6 +1126,7 @@ def build_mekh_generators(
     col_source = cols[_MEKH_COL_ENERGY_SOURCE]
     col_stech  = cols[_MEKH_COL_STORAGE_TECH]
     col_owner  = cols[_MEKH_COL_NAME_OWNER]
+    col_conn_date = cols[_MEKH_COL_CONNECTION_DATE]
 
     prefix_index = _build_bus_prefix_index(bus_map)
     bus_coord_index: dict[int, tuple[float, float, float | None]] | None = None
@@ -1041,6 +1138,16 @@ def build_mekh_generators(
     n_live_geocodes = 0
 
     for i, row in mekh_df.iterrows():
+        owner = str(row.get(col_owner, "")).strip()
+
+        connection_date = _parse_mekh_connection_date(row.get(col_conn_date))
+        if _is_mekh_connection_too_far_future(connection_date):
+            future_skipped.append(
+                f"row {i} '{owner}' (connection date {connection_date.date()} "
+                f"after {_MEKH_MAX_CONNECTION_YEAR})"
+            )
+            continue
+
         mekh_sub_name = str(row.get(col_sub, "")).strip()
         municipality  = str(row.get(col_municipality, "")).strip()
         owner    = str(row.get(col_owner, "")).strip()
@@ -1115,6 +1222,11 @@ def build_mekh_generators(
     # geocoded in this run (harmless if already saved incrementally).
     if len(geocode_cache) != cache_size_at_start:
         _save_geocode_cache(geocode_cache_path, geocode_cache)
+
+    if future_skipped:
+        print(f"[generator_builder]  MEKH INFO — skipped {len(future_skipped)} rows "
+              f"with connection date after {_MEKH_MAX_CONNECTION_YEAR}: "
+              + "; ".join(future_skipped))
 
     if geo_resolved:
         print(f"[generator_builder]  MEKH INFO — {len(geo_resolved)} rows resolved "

@@ -17,7 +17,7 @@ from pp_builder.busbar_builder     import build_busbars
 from pp_builder.branch_builder     import build_branches
 from pp_builder.transformer_2w_builder import build_transformers
 from pp_builder.transformer_3w_builder import build_transformers_3w
-from pp_builder.load_builder       import build_loads
+from pp_builder.load_builder       import build_loads, scale_loads_to_target
 from pp_builder.generator_builder_v8 import build_generators, build_mekh_generators, build_hmke_generators
 from pp_builder.ext_grid_builder   import build_ext_grids
 from pp_builder.shunt_builder      import build_shunts
@@ -68,6 +68,7 @@ class NetworkBuilder:
         output_dir: str | None = None,
         f_hz: float = 50.0,
         sn_mva: float = 100.0,
+        target_load_mw: float | None = None,
     ) -> pp.pandapowerNet:
         """
         Read Excel, create pandapower network, optionally save to file.
@@ -88,6 +89,8 @@ class NetworkBuilder:
             Grid frequency (default 50 Hz).
         sn_mva : float
             System base MVA (default 100 MVA).
+        target_load_mw : float, optional
+            If given, scale all loads to this total MW value after building and dropping inactive elements.
 
         Returns
         -------
@@ -148,6 +151,9 @@ class NetworkBuilder:
             print(f"[NetworkBuilder]  Saved → {out / f'rawmodel_{timestamp}.json'}")
 
         pp.drop_inactive_elements(self.net,respect_switches=True)
+
+        if target_load_mw is not None:
+            scale_loads_to_target(self.net, target_load_mw, in_service_only=True, respect_existing_scaling=False)
 
         print(f"\n{'='*60}")
         print(f"Network summary:")

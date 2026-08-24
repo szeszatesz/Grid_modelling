@@ -1,5 +1,5 @@
 from pp_builder import NetworkBuilder, LoadFlowRunner
-from pp_builder.config import RATING_SEASON_SUMMER, RATING_SEASON_WINTER
+from pp_builder.config import DEFAULT_LOAD_SCALING, RATING_SEASON_SUMMER, RATING_SEASON_WINTER
 from pp_builder.network_topology import report_islands
 from pp_builder.network_visualiser import draw_network
 from pandapower import to_excel, to_excel_with_names
@@ -21,6 +21,9 @@ if building:
         line_geo_csvs=["PandaPower/input_data/GRIDMODELL/400kV_pont.csv"],
         season=RATING_SEASON_SUMMER,
         output_dir="/home/attilas/Grid_modelling/PandaPower/models",
+        f_hz=50.0,
+        sn_mva=100.0,
+        target_load_mw=6400.0,  # Scale all loads to this total MW value
     )
 else:
     net = builder.load("PandaPower/models/model_20260727_142428.json")
@@ -45,7 +48,7 @@ if exe_lf:
     runner = LoadFlowRunner(net)
     ok = runner.run(
         season=RATING_SEASON_SUMMER,
-        load_scale=1.10,             # 110% of base load
+        load_scale=DEFAULT_LOAD_SCALING,             # 1.0 = no scaling. Use this as load scaling happenes a modell generation step, not in the load flow step.
         # per-technology generator overrides (optional):
         tech_gen_overrides={"WINDONSHORE": 0.85, "SOLARPHOTOVO": 1.00, "BATTERYSTRG": 1.00},
         enforce_q_lims=True,

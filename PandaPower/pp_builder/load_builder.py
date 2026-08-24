@@ -73,3 +73,72 @@ def apply_load_scaling(net: pp.pandapowerNet, factor: float) -> None:
     """
     net.load["scaling"] = factor
     print(f"[load_builder]  Load scaling set to {factor:.4f} for all loads.")
+
+
+def scale_loads_to_target(
+    net: pp.pandapowerNet,
+    target_mw: float,
+    in_service_only: bool = True,
+    respect_existing_scaling: bool = True,
+) -> float:
+    """
+    Scale all loads uniformly so that total active load equals *target_mw*.
+
+    The current total is computed as sum(p_mw * scaling) over the loads
+    considered (in-service only by default). A single multiplicative
+    factor is then applied on top of each load's existing `scaling`
+    value, preserving relative differences between loads while hitting
+    the requested system-wide capacity.
+
+    Parameters
+    ----------
+    net : pp.pandapowerNet
+        Network whose net.load table will be modified in place.
+    target_mw : float
+        Desired total active load capacity in MW (e.g. 6400).
+    in_service_only : bool
+        If True, only in-service loads contribute to the current total
+        and only in-service loads are rescaled.
+    respect_existing_scaling : bool
+        If True, multiply the existing per-load `scaling` values by the
+        derived factor (preserves per-load ScalingFactor differences).
+        If False, overwrite `scaling` directly with the factor.
+
+    Returns
+    -------
+    float
+        The scale factor that was applied.
+
+    Raises
+    ------
+    ValueError
+        If there are no loads, or the current total load is zero
+        (scaling factor would be undefined).
+    """
+    mask = net.load["in_service"] if in_service_only else pd.Series(True, index=net.load.index)
+
+    if not mask.any():
+        raise ValueError("[load_builder] No (in-service) loads found — cannot scale to target.")
+
+    current_total_mw = (net.load.loc[mask, "p_mw"] * net.load.loc[mask, "scaling"]).sum()
+
+    if current_total_mw <= 0:
+        raise ValueError(
+            f"[load_builder] Current total load is {current_total_mw:.3f} MW — "
+            "cannot derive a finite scale factor."
+        )
+
+    factor = target_mw / current_total_mw
+
+    if respect_existing_scaling:
+        net.load.loc[mask, "scaling"] = net.load.loc[mask, "scaling"] * factor
+    else:
+        net.load.loc[mask, "scaling"] = factor
+
+    new_total_mw = (net.load.loc[mask, "p_mw"] * net.load.loc[mask, "scaling"]).sum()
+
+    print(
+        f"[load_builder] Scaled loads: {current_total_mw:.1f} MW → "
+        f"{new_total_mw:.1f} MW (target {target_mw:.1f} MW, factor={factor:.4f})"
+    )
+    return factor

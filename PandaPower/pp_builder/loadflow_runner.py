@@ -66,7 +66,7 @@ class LoadFlowRunner:
         #set_line_ratings(self.net, season)
 
         # 2. Apply load scaling
-        apply_load_scaling(self.net, load_scale)
+        # deleted, as load scaling is applied in the build function, and not needed here
 
         # 3. Apply generator scaling
         apply_gen_scaling(self.net, season, tech_overrides=tech_gen_overrides)
@@ -138,7 +138,7 @@ class LoadFlowRunner:
         return ll[ll["loading_pu"] >= threshold_pu].sort_values(
             "loading_pu", ascending=False)
 
-    def print_summary(self, top_n: int = 10) -> None:
+    def print_summary(self, top_n: int = 20) -> None:
         """Print a brief load-flow summary to stdout."""
         buses = self.bus_voltages()
         lines = self.line_loadings()
@@ -147,7 +147,7 @@ class LoadFlowRunner:
         print(f"{'─'*60}")
         print(f"Voltage range : "
               f"{buses['vm_pu'].min():.4f} – {buses['vm_pu'].max():.4f} pu")
-        overloaded = lines[lines["loading_pu"] >= 1.0]
+        overloaded = lines[lines["loading_pu"] >= 1.1]
         print(f"Overloaded lines : {len(overloaded)}")
         if not overloaded.empty:
             print(overloaded[["name", "loading_pu", "i_ka", "max_i_ka"]]

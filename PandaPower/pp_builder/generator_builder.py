@@ -1473,7 +1473,9 @@ def apply_gen_scaling(
     """
     overrides = tech_overrides or {}
 
-    def _scale(technology: str) -> float:
+    def _scale(technology) -> float:
+        if isinstance(technology, list):
+            technology = technology[0] if technology else None
         if technology in overrides:
             return overrides[technology]
         return TECH_SCALING_DEFAULTS.get(technology, {}).get(season, DEFAULT_GEN_SCALING)

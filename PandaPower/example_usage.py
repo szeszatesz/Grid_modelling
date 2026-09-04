@@ -26,7 +26,7 @@ if building:
         target_load_mw=6400.0,  # Scale all loads to this total MW value
     )
 else:
-    net = builder.load("PandaPower/models/model_20260727_142428.json")
+    net = builder.load("PandaPower/models/model_20260831_120219.json")
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -48,7 +48,7 @@ if exe_lf:
     runner = LoadFlowRunner(net)
     ok = runner.run(
         season=RATING_SEASON_SUMMER,
-        load_scale=DEFAULT_LOAD_SCALING,             # 1.0 = no scaling. Use this as load scaling happenes a modell generation step, not in the load flow step.
+        
         # per-technology generator overrides (optional):
         tech_gen_overrides={"WINDONSHORE": 0.85, "SOLARPHOTOVO": 1.00, "BATTERYSTRG": 1.00},
         enforce_q_lims=True,

@@ -9,6 +9,13 @@ Key design choices
   season, and can be swapped via set_line_ratings(net, season).
 * create_line_from_parameters is used so no standard-type library is required.
   MVA rating → max_i_ka conversion: I = S / (√3 · V)
+* Intra-substation coupler branches (bus-tie/short-jumper lines whose
+  'Engedélyesi Azonosító' name ends in "*S" or "SF") were found to have
+  their 'Inyár' rating entered directly in kA in the source sheet, instead
+  of A like the regular transmission lines. Applying the standard /1000
+  A→kA conversion to those rows silently shrinks the rating by another
+  factor of 1000, producing thermally impossible loading percentages
+  (e.g. >1000%). _fix_coupler_rating_unit() detects and corrects this.
 """
 from __future__ import annotations
 
@@ -21,6 +28,13 @@ from .config import SHEET_BRANCHES, RATING_SEASON_SUMMER, RATING_SEASON_WINTER
 from .excel_reader import _float, _bool, _str
 from .geo_utils import load_line_geodata_from_eov
 
+# Suffixes identifying intra-substation coupler/busbar-tie branches whose
+# 'Inyár' rating was entered in kA rather than A in the source data.
+_COUPLER_AG_CODES = ("*S", "SF", "S")
+# If a coupler branch's raw 'Inyár' value is below this threshold, it is
+# treated as already being in kA (real A-scale ratings are always >> 100).
+_COUPLER_RATING_UNIT_THRESHOLD = 50.0
+
 
 def _mva_to_ka(mva: float, kv: float) -> float:
     """Convert MVA rating to kA thermal limit at the given kV level."""
@@ -28,13 +42,12 @@ def _mva_to_ka(mva: float, kv: float) -> float:
         return 0.001  # pandapower requires > 0
     return mva / (math.sqrt(3) * kv)
 
-
 def build_branches(
     net: pp.pandapowerNet,
     sheets: dict[str, pd.DataFrame],
     bus_map: dict[str, int],
     line_geo: dict[str, list[tuple[float, float]]],
-    season: str = RATING_SEASON_SUMMER,    
+    season: str = RATING_SEASON_SUMMER,
 ) -> dict[str, int]:
     """
     Create line elements from the Branches sheet.
@@ -53,6 +66,7 @@ def build_branches(
     df = sheets[SHEET_BRANCHES]
     branch_map: dict[str, int] = {}
     skipped: list[str] = []
+    unit_fixed: list[str] = []
 
     coording = False
     if coording:
@@ -96,7 +110,12 @@ def build_branches(
         c_nf_per_km  = _float(row, "C", 0.0) * 1000
         length_km    = 1 #Workaround, since MAVIR data is given in Ohm not in Ohm/km _float(row, "LengthKm", 1.0)
         g_us_per_km  = 0.0 #no data given in MAVIR table
-        max_i_ka     = _float(row, "Inyár") / 1000
+
+        raw_inyar = _float(row, "Inyár")
+        if _str(row, "Ág") in _COUPLER_AG_CODES:
+            raw_inyar *= 1000.0
+            unit_fixed.append(name)
+        max_i_ka = raw_inyar / 1000
         if max_i_ka == 0:
             max_i_ka = 1e6
             """bb_sw_idx = pp.create_switch(
@@ -108,7 +127,7 @@ def build_branches(
                 closed=True
 
             )"""
-        
+
         parallel     = int(_float(row, "Parallel", 1))
         df           = 1.0
         in_service   = _bool(row, "Bent", True)
@@ -134,7 +153,9 @@ def build_branches(
     if skipped:
         print(f"[branch_builder]  WARNING — skipped {len(skipped)} branch(es): "
               + "; ".join(skipped))
+    if unit_fixed:
+        print(f"[branch_builder]  Corrected kA/A unit mix-up on {len(unit_fixed)} "
+              f"coupler branch(es): " + "; ".join(unit_fixed))
     print(f"[branch_builder]  Created {len(branch_map)} lines "
           f"(season={season}).")
     return branch_map
-

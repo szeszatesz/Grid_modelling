@@ -999,7 +999,7 @@ def build_generators(
         max_p_mw   = _float(row, "Pmax",  0.0)
         min_p_mw   = _float(row, "Pmin",  0.0)
 
-        if technology in VOLTAGE_CONTROL_TECHS and sn_mva is not None and sn_mva > 10 and ((max_q_mvar is not None and max_q_mvar != 0) or (min_q_mvar is not None and min_q_mvar != 0)):
+        if technology in VOLTAGE_CONTROL_TECHS and sn_mva is not None and sn_mva > _MEKH_VOLTAGE_CONTROL_THRESHOLD_MVA and ((max_q_mvar is not None and max_q_mvar != 0) or (min_q_mvar is not None and min_q_mvar != 0)):
             # Synchronous / voltage-controlled generator — PV node
             idx = pp.create_gen(
                 net,

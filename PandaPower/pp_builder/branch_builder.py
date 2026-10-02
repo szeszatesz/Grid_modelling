@@ -31,16 +31,6 @@ from .geo_utils import load_line_geodata_from_eov
 # Suffixes identifying intra-substation coupler/busbar-tie branches whose
 # 'Inyár' rating was entered in kA rather than A in the source data.
 _COUPLER_AG_CODES = ("*S", "SF", "S")
-# If a coupler branch's raw 'Inyár' value is below this threshold, it is
-# treated as already being in kA (real A-scale ratings are always >> 100).
-_COUPLER_RATING_UNIT_THRESHOLD = 50.0
-
-
-def _mva_to_ka(mva: float, kv: float) -> float:
-    """Convert MVA rating to kA thermal limit at the given kV level."""
-    if kv <= 0 or mva <= 0:
-        return 0.001  # pandapower requires > 0
-    return mva / (math.sqrt(3) * kv)
 
 def build_branches(
     net: pp.pandapowerNet,

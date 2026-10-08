@@ -10,6 +10,11 @@ Generator type mapping
 
 Data sources
 ------------
+* Random small/medium distributed solar can be added with
+  build_distributed_solar_22kv(). It creates non-voltage-controlling
+  pp.create_sgen elements only on in-service 22 kV busbars. Individual
+  project sizes are random within 50-500 kW by default, while their sum
+  is forced to the requested total (default 1460 MW).
 * Dispatchable / conventional generators (gas, hydro, coal, nuclear, etc.)
   are still loaded from the MAVIR "Generators" sheet via build_generators().
   Every gen/sgen created from this sheet is tagged source="MAVIR" (a
@@ -218,7 +223,10 @@ from .config import (
     DEFAULT_GEN_SCALING,
     TECH_SCALING_DEFAULTS,
     RATING_SEASON_SUMMER,
-    TECHNOLOGY_WIND, TECHNOLOGY_SOLAR, TECHNOLOGY_BATTERY, VOLTAGE_CONTROL_TECHS
+    TECHNOLOGY_WIND, TECHNOLOGY_SOLAR, TECHNOLOGY_BATTERY, VOLTAGE_CONTROL_TECHS,
+    _DISTRIBUTED_PV_DEFAULT_TOTAL_MW,
+    _DISTRIBUTED_PV_TARGET_KV,
+    _DISTRIBUTED_PV_KV_TOLERANCE
 )
 from .excel_reader import _float, _bool, _str
 from .busbar_builder import voltage_reader
@@ -999,7 +1007,7 @@ def build_generators(
         max_p_mw   = _float(row, "Pmax",  0.0)
         min_p_mw   = _float(row, "Pmin",  0.0)
 
-        if technology in VOLTAGE_CONTROL_TECHS and sn_mva is not None and sn_mva > _MEKH_VOLTAGE_CONTROL_THRESHOLD_MVA and ((max_q_mvar is not None and max_q_mvar != 0) or (min_q_mvar is not None and min_q_mvar != 0)):
+        if technology in VOLTAGE_CONTROL_TECHS and sn_mva is not None and sn_mva > 10 and ((max_q_mvar is not None and max_q_mvar != 0) or (min_q_mvar is not None and min_q_mvar != 0)):
             # Synchronous / voltage-controlled generator — PV node
             idx = pp.create_gen(
                 net,
@@ -1450,6 +1458,1766 @@ def build_hmke_generators(
           f"{n_live_geocodes} newly geocoded), total {total_mw:.3f} MW, "
           f"season={season}. Geocode cache: '{geocode_cache_path}' "
           f"({len(geocode_cache)} entries).")
+
+    return gen_map
+
+
+def build_distributed_solar_22kv(
+    net: pp.pandapowerNet,
+    bus_map: dict[str, int],
+    total_capacity_mw: float = 1460.0,
+    season: str = RATING_SEASON_SUMMER,
+    min_project_kw: float = 50.0,
+    max_project_kw: float = 500.0,
+    random_seed: int | None = None,
+) -> dict[str, tuple[str, int]]:
+    """
+    Create randomly sized distributed solar projects on 22 kV busbars.
+
+    Multiple projects may be connected to the same busbar. Projects are
+    distributed as evenly as possible: the number of projects connected
+    to any two eligible busbars differs by no more than one.
+
+    Individual project capacities are randomly generated between
+    min_project_kw and max_project_kw. Their combined installed capacity
+    is adjusted to equal total_capacity_mw exactly.
+
+    All projects are non-voltage-controlling pp.create_sgen elements with:
+
+        q_mvar = 0.0
+        scaling = 1.0
+        in_service = True
+
+    Parameters
+    ----------
+    net : pandapowerNet
+        Network to which the distributed generators are added.
+
+    bus_map : dict[str, int]
+        Mapping from bus names to pandapower bus indices.
+
+    total_capacity_mw : float, default 1460.0
+        Required total installed distributed-solar capacity in MW.
+
+    season : str
+        Retained for compatibility and reporting. Distributed projects
+        are created with scaling=1.0.
+
+    min_project_kw : float, default 50.0
+        Minimum individual project capacity in kW.
+
+    max_project_kw : float, default 500.0
+        Maximum individual project capacity in kW.
+
+    random_seed : int or None
+        Random seed for repeatable project sizes and locations.
+
+    Returns
+    -------
+    dict[str, tuple[str, int]]
+        Mapping:
+
+            project_name -> ("sgen", sgen_index)
+
+    Raises
+    ------
+    ValueError
+        If parameters are invalid or no in-service 22 kV busbars exist.
+
+    RuntimeError
+        If the exact requested total cannot be created.
+    """
+
+    source_tag = "DISTRIBUTED_22KV"
+    target_voltage_kv = 22.0
+    voltage_tolerance_kv = 1e-6
+    capacity_tolerance_mw = 1e-9
+
+    total_capacity_mw = float(total_capacity_mw)
+    min_project_mw = float(min_project_kw) / 1000.0
+    max_project_mw = float(max_project_kw) / 1000.0
+
+    # --------------------------------------------------------------
+    # Validate parameters
+    # --------------------------------------------------------------
+    if not np.isfinite(total_capacity_mw):
+        raise ValueError(
+            "total_capacity_mw must be a finite number."
+        )
+
+    if total_capacity_mw < 0.0:
+        raise ValueError(
+            "total_capacity_mw cannot be negative."
+        )
+
+    if not np.isfinite(min_project_mw):
+        raise ValueError(
+            "min_project_kw must be a finite number."
+        )
+
+    if not np.isfinite(max_project_mw):
+        raise ValueError(
+            "max_project_kw must be a finite number."
+        )
+
+    if min_project_mw <= 0.0:
+        raise ValueError(
+            "min_project_kw must be greater than zero."
+        )
+
+    if max_project_mw < min_project_mw:
+        raise ValueError(
+            "max_project_kw must be greater than or equal to "
+            "min_project_kw."
+        )
+
+    if total_capacity_mw == 0.0:
+        print(
+            "[generator_builder] Distributed 22 kV solar requested "
+            "capacity is 0 MW; no projects were created."
+        )
+        return {}
+
+    # --------------------------------------------------------------
+    # Find eligible in-service 22 kV busbars
+    # --------------------------------------------------------------
+    bus_name_by_index = {
+        bus_idx: bus_name
+        for bus_name, bus_idx in bus_map.items()
+    }
+
+    candidate_buses: list[tuple[int, str]] = []
+
+    for bus_idx in net.bus.index:
+        try:
+            vn_kv = float(net.bus.at[bus_idx, "vn_kv"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if not np.isfinite(vn_kv):
+            continue
+
+        if "in_service" in net.bus.columns:
+            in_service_value = net.bus.at[
+                bus_idx, "in_service"
+            ]
+
+            in_service = (
+                True
+                if pd.isna(in_service_value)
+                else bool(in_service_value)
+            )
+        else:
+            in_service = True
+
+        if not in_service:
+            continue
+
+        if not np.isclose(
+            vn_kv,
+            target_voltage_kv,
+            atol=voltage_tolerance_kv,
+            rtol=0.0,
+        ):
+            continue
+
+        bus_name = bus_name_by_index.get(bus_idx)
+
+        if bus_name is None:
+            if "name" in net.bus.columns:
+                network_bus_name = net.bus.at[bus_idx, "name"]
+
+                bus_name = (
+                    str(network_bus_name)
+                    if pd.notna(network_bus_name)
+                    else str(bus_idx)
+                )
+            else:
+                bus_name = str(bus_idx)
+
+        candidate_buses.append(
+            (int(bus_idx), bus_name)
+        )
+
+    if not candidate_buses:
+        raise ValueError(
+            "No in-service 22 kV busbars were found. Check "
+            "net.bus['vn_kv'] and net.bus['in_service']."
+        )
+
+    bus_count = len(candidate_buses)
+    rng = np.random.default_rng(random_seed)
+
+    # --------------------------------------------------------------
+    # Determine the number of individual projects
+    # --------------------------------------------------------------
+    minimum_project_count = int(
+        np.ceil(
+            total_capacity_mw / max_project_mw - 1e-12
+        )
+    )
+
+    maximum_project_count = int(
+        np.floor(
+            total_capacity_mw / min_project_mw + 1e-12
+        )
+    )
+
+    if minimum_project_count > maximum_project_count:
+        raise ValueError(
+            f"Requested capacity {total_capacity_mw:.6f} MW cannot "
+            f"be represented using project capacities between "
+            f"{min_project_kw:.3f} and "
+            f"{max_project_kw:.3f} kW."
+        )
+
+    target_average_project_mw = (
+        min_project_mw + max_project_mw
+    ) / 2.0
+
+    estimated_project_count = int(
+        round(
+            total_capacity_mw
+            / target_average_project_mw
+        )
+    )
+
+    project_count = int(
+        np.clip(
+            estimated_project_count,
+            minimum_project_count,
+            maximum_project_count,
+        )
+    )
+
+    minimum_total_for_count = (
+        project_count * min_project_mw
+    )
+
+    maximum_total_for_count = (
+        project_count * max_project_mw
+    )
+
+    if not (
+        minimum_total_for_count
+        <= total_capacity_mw
+        <= maximum_total_for_count
+    ):
+        raise RuntimeError(
+            f"Internal project-count error: "
+            f"{project_count} projects can represent only "
+            f"{minimum_total_for_count:.6f}-"
+            f"{maximum_total_for_count:.6f} MW, but "
+            f"{total_capacity_mw:.6f} MW was requested."
+        )
+
+    # --------------------------------------------------------------
+    # Generate random capacities with an exact combined total
+    # --------------------------------------------------------------
+    raw_capacities_mw = rng.uniform(
+        min_project_mw,
+        max_project_mw,
+        size=project_count,
+    )
+
+    # Add a common offset to the random capacities and clip them to
+    # the permitted range. Bisection finds the offset that produces
+    # the requested total.
+    lower_offset = (
+        min_project_mw
+        - float(raw_capacities_mw.max())
+    )
+
+    upper_offset = (
+        max_project_mw
+        - float(raw_capacities_mw.min())
+    )
+
+    capacities_mw = raw_capacities_mw.copy()
+
+    for _ in range(100):
+        offset = (
+            lower_offset + upper_offset
+        ) / 2.0
+
+        capacities_mw = np.clip(
+            raw_capacities_mw + offset,
+            min_project_mw,
+            max_project_mw,
+        )
+
+        current_total_mw = float(
+            capacities_mw.sum()
+        )
+
+        if current_total_mw < total_capacity_mw:
+            lower_offset = offset
+        else:
+            upper_offset = offset
+
+    final_offset = (
+        lower_offset + upper_offset
+    ) / 2.0
+
+    capacities_mw = np.clip(
+        raw_capacities_mw + final_offset,
+        min_project_mw,
+        max_project_mw,
+    )
+
+    # Close the remaining floating-point residual while respecting
+    # the capacity limits.
+    residual_mw = (
+        total_capacity_mw
+        - float(capacities_mw.sum())
+    )
+
+    if abs(residual_mw) > capacity_tolerance_mw:
+        random_project_order = rng.permutation(
+            project_count
+        )
+
+        for project_position in random_project_order:
+            if (
+                abs(residual_mw)
+                <= capacity_tolerance_mw
+            ):
+                break
+
+            if residual_mw > 0.0:
+                available_headroom_mw = (
+                    max_project_mw
+                    - capacities_mw[project_position]
+                )
+
+                adjustment_mw = min(
+                    residual_mw,
+                    available_headroom_mw,
+                )
+
+                capacities_mw[
+                    project_position
+                ] += adjustment_mw
+
+                residual_mw -= adjustment_mw
+
+            else:
+                available_reduction_mw = (
+                    capacities_mw[project_position]
+                    - min_project_mw
+                )
+
+                adjustment_mw = min(
+                    abs(residual_mw),
+                    available_reduction_mw,
+                )
+
+                capacities_mw[
+                    project_position
+                ] -= adjustment_mw
+
+                residual_mw += adjustment_mw
+
+    generated_total_mw = float(
+        capacities_mw.sum()
+    )
+
+    if not np.isclose(
+        generated_total_mw,
+        total_capacity_mw,
+        atol=capacity_tolerance_mw,
+        rtol=0.0,
+    ):
+        raise RuntimeError(
+            f"Could not create the exact requested capacity. "
+            f"Requested={total_capacity_mw:.9f} MW, "
+            f"generated={generated_total_mw:.9f} MW."
+        )
+
+    if float(capacities_mw.min()) < (
+        min_project_mw - capacity_tolerance_mw
+    ):
+        raise RuntimeError(
+            "At least one generated project is below "
+            "min_project_kw."
+        )
+
+    if float(capacities_mw.max()) > (
+        max_project_mw + capacity_tolerance_mw
+    ):
+        raise RuntimeError(
+            "At least one generated project is above "
+            "max_project_kw."
+        )
+
+    # Randomize the order of project capacities before assigning
+    # them to busbars.
+    rng.shuffle(capacities_mw)
+
+    # --------------------------------------------------------------
+    # Create an evenly distributed list of bus assignments
+    # --------------------------------------------------------------
+    complete_rounds = (
+        project_count // bus_count
+    )
+
+    remaining_projects = (
+        project_count % bus_count
+    )
+
+    bus_assignments: list[tuple[int, str]] = []
+
+    # Every complete round assigns exactly one new project to every
+    # candidate busbar. A fresh permutation is used for each round.
+    for _ in range(complete_rounds):
+        round_order = rng.permutation(bus_count)
+
+        for candidate_position in round_order:
+            bus_assignments.append(
+                candidate_buses[
+                    int(candidate_position)
+                ]
+            )
+
+    # Any remaining projects are placed on a random subset of buses,
+    # with no bus receiving two projects in this partial round.
+    if remaining_projects:
+        partial_round_order = rng.permutation(
+            bus_count
+        )[:remaining_projects]
+
+        for candidate_position in partial_round_order:
+            bus_assignments.append(
+                candidate_buses[
+                    int(candidate_position)
+                ]
+            )
+
+    if len(bus_assignments) != project_count:
+        raise RuntimeError(
+            f"Bus-assignment error: expected "
+            f"{project_count} assignments, created "
+            f"{len(bus_assignments)}."
+        )
+
+    # Shuffle assignments and capacities together only through the
+    # assignment list. Project counts per bus remain balanced.
+    rng.shuffle(bus_assignments)
+
+    # --------------------------------------------------------------
+    # Create non-voltage-controlling sgen elements
+    # --------------------------------------------------------------
+    generator_map: dict[
+        str,
+        tuple[str, int],
+    ] = {}
+
+    created_indices: list[int] = []
+
+    project_number_at_bus: dict[int, int] = {
+        bus_idx: 0
+        for bus_idx, _bus_name in candidate_buses
+    }
+
+    for project_number, (
+        capacity_mw,
+        bus_assignment,
+    ) in enumerate(
+        zip(capacities_mw, bus_assignments),
+        start=1,
+    ):
+        bus_idx, bus_name = bus_assignment
+
+        project_number_at_bus[bus_idx] += 1
+        local_project_number = (
+            project_number_at_bus[bus_idx]
+        )
+
+        project_name = (
+            f"DIST22_SOLAR_"
+            f"{project_number:05d}_"
+            f"{bus_idx}_"
+            f"{local_project_number:02d}"
+        )
+
+        sgen_idx = pp.create_sgen(
+            net,
+            bus=bus_idx,
+            p_mw=float(capacity_mw),
+            q_mvar=0.0,
+            sn_mva=float(capacity_mw),
+            scaling=1.0,
+            name=project_name,
+            type=TECHNOLOGY_SOLAR,
+            in_service=True,
+        )
+
+        net.sgen.at[
+            sgen_idx, "technology"
+        ] = TECHNOLOGY_SOLAR
+
+        net.sgen.at[
+            sgen_idx, "source"
+        ] = source_tag
+
+        net.sgen.at[
+            sgen_idx, "voltage_level"
+        ] = "22 kV"
+
+        net.sgen.at[
+            sgen_idx, "project_capacity_kw"
+        ] = float(capacity_mw) * 1000.0
+
+        net.sgen.at[
+            sgen_idx, "connection_bus_name"
+        ] = bus_name
+
+        net.sgen.at[
+            sgen_idx, "project_number_at_bus"
+        ] = local_project_number
+
+        generator_map[project_name] = (
+            "sgen",
+            sgen_idx,
+        )
+
+        created_indices.append(sgen_idx)
+
+    # --------------------------------------------------------------
+    # Verify the actual pandapower table
+    # --------------------------------------------------------------
+    created_sgens = net.sgen.loc[
+        created_indices
+    ]
+
+    created_total_mw = float(
+        created_sgens["p_mw"].sum()
+    )
+
+    created_minimum_kw = float(
+        created_sgens["p_mw"].min()
+        * 1000.0
+    )
+
+    created_maximum_kw = float(
+        created_sgens["p_mw"].max()
+        * 1000.0
+    )
+
+    projects_per_bus = (
+        created_sgens.groupby("bus").size()
+    )
+
+    minimum_projects_per_bus = int(
+        projects_per_bus.min()
+    )
+
+    maximum_projects_per_bus = int(
+        projects_per_bus.max()
+    )
+
+    if not np.isclose(
+        created_total_mw,
+        total_capacity_mw,
+        atol=capacity_tolerance_mw,
+        rtol=0.0,
+    ):
+        raise RuntimeError(
+            f"Distributed solar capacity mismatch after creating "
+            f"pandapower elements: requested "
+            f"{total_capacity_mw:.9f} MW, created "
+            f"{created_total_mw:.9f} MW."
+        )
+
+    if (
+        maximum_projects_per_bus
+        - minimum_projects_per_bus
+        > 1
+    ):
+        raise RuntimeError(
+            "Distributed solar projects were not evenly "
+            "distributed among the candidate busbars."
+        )
+
+    print(
+        f"[generator_builder] Created "
+        f"{project_count} non-voltage-controlling distributed "
+        f"solar sgen elements on {bus_count} eligible "
+        f"22 kV busbars."
+    )
+
+    print(
+        f"[generator_builder] Distributed solar capacity: "
+        f"requested={total_capacity_mw:.6f} MW, "
+        f"created={created_total_mw:.6f} MW."
+    )
+
+    print(
+        f"[generator_builder] Project capacity range: "
+        f"{created_minimum_kw:.3f}-"
+        f"{created_maximum_kw:.3f} kW."
+    )
+
+    print(
+        f"[generator_builder] Projects per busbar: "
+        f"minimum={minimum_projects_per_bus}, "
+        f"maximum={maximum_projects_per_bus}, "
+        f"random_seed={random_seed}, "
+        f"season={season}, scaling=1.0."
+    )
+
+    gen_map = generator_map
+
+    return gen_map
+
+
+def build_behind_meter_mv_generators(
+    net: pp.pandapowerNet,
+    bus_map: dict[str, int],
+    total_capacity_mw: float = 810.0,
+    mean_project_kw: float = 250.0,
+    std_project_kw: float = 150.0,
+    min_project_kw: float = 0.0,
+    max_project_kw: float = 2000.0,
+    min_voltage_kv: float = 1.0,
+    max_voltage_kv: float = 35.0,
+    random_seed: int | None = None,
+) -> dict[str, tuple[str, int]]:
+    """
+    Create behind-the-meter solar projects on MV busbars.
+
+    Project characteristics
+    -----------------------
+    - Total default installed capacity: 810 MW.
+    - Individual project sizes follow a truncated normal distribution.
+    - Default distribution center: 250 kW.
+    - Default standard deviation: 150 kW.
+    - Individual capacity limits: above 0 and at most 2 MW.
+    - Multiple projects may be connected to one busbar.
+    - All projects are non-voltage-controlling sgen elements.
+    - scaling is fixed at 1.0.
+
+    Placement rule
+    --------------
+    Projects are placed only at in-service MV buses having positive
+    in-service consumption.
+
+    Consumption at a bus is calculated as:
+
+        sum(load.p_mw * load.scaling)
+
+    for in-service loads connected directly to that bus.
+
+    Capacity is distributed proportionally to the available consumption
+    headroom. Consequently, buses with higher consumption receive more
+    behind-the-meter capacity, while the same approximate penetration
+    ratio is maintained across all eligible buses.
+
+    Existing in-service sgen elements tagged source="BTM_MV" are deducted
+    from the consumption headroom. This also prevents a repeated call from
+    assigning more behind-the-meter generation than the load can absorb.
+
+    The following condition is checked for every eligible bus:
+
+        existing BTM generation + new BTM generation < consumption
+
+    Returns
+    -------
+    dict[str, tuple[str, int]]
+        project_name -> ("sgen", sgen_index)
+    """
+
+    source_tag = "BTM_MV"
+    capacity_tolerance_mw = 1e-9
+    consumption_margin_mw = 1e-6
+    minimum_positive_project_mw = 1e-9
+
+    total_capacity_mw = float(total_capacity_mw)
+    mean_project_mw = float(mean_project_kw) / 1000.0
+    std_project_mw = float(std_project_kw) / 1000.0
+    min_project_mw = float(min_project_kw) / 1000.0
+    max_project_mw = float(max_project_kw) / 1000.0
+
+    # --------------------------------------------------------------
+    # Validate parameters
+    # --------------------------------------------------------------
+    if not np.isfinite(total_capacity_mw):
+        raise ValueError(
+            "total_capacity_mw must be finite."
+        )
+
+    if total_capacity_mw < 0.0:
+        raise ValueError(
+            "total_capacity_mw cannot be negative."
+        )
+
+    if total_capacity_mw == 0.0:
+        print(
+            "[generator_builder] Behind-the-meter requested "
+            "capacity is 0 MW; no projects were created."
+        )
+        return {}
+
+    if not np.isfinite(mean_project_mw):
+        raise ValueError(
+            "mean_project_kw must be finite."
+        )
+
+    if mean_project_mw <= 0.0:
+        raise ValueError(
+            "mean_project_kw must be greater than zero."
+        )
+
+    if not np.isfinite(std_project_mw):
+        raise ValueError(
+            "std_project_kw must be finite."
+        )
+
+    if std_project_mw <= 0.0:
+        raise ValueError(
+            "std_project_kw must be greater than zero."
+        )
+
+    if not np.isfinite(min_project_mw):
+        raise ValueError(
+            "min_project_kw must be finite."
+        )
+
+    if not np.isfinite(max_project_mw):
+        raise ValueError(
+            "max_project_kw must be finite."
+        )
+
+    if min_project_mw < 0.0:
+        raise ValueError(
+            "min_project_kw cannot be negative."
+        )
+
+    if max_project_mw <= 0.0:
+        raise ValueError(
+            "max_project_kw must be greater than zero."
+        )
+
+    if max_project_mw <= min_project_mw:
+        raise ValueError(
+            "max_project_kw must be greater than "
+            "min_project_kw."
+        )
+
+    if not np.isfinite(min_voltage_kv):
+        raise ValueError(
+            "min_voltage_kv must be finite."
+        )
+
+    if not np.isfinite(max_voltage_kv):
+        raise ValueError(
+            "max_voltage_kv must be finite."
+        )
+
+    if max_voltage_kv <= min_voltage_kv:
+        raise ValueError(
+            "max_voltage_kv must be greater than "
+            "min_voltage_kv."
+        )
+
+    rng = np.random.default_rng(random_seed)
+
+    # Zero-capacity projects are not useful pandapower elements.
+    effective_minimum_project_mw = max(
+        min_project_mw,
+        minimum_positive_project_mw,
+    )
+
+    # --------------------------------------------------------------
+    # Build bus-name lookup
+    # --------------------------------------------------------------
+    bus_name_by_index = {
+        int(bus_idx): bus_name
+        for bus_name, bus_idx in bus_map.items()
+    }
+
+    # --------------------------------------------------------------
+    # Calculate scaled in-service consumption at each bus
+    # --------------------------------------------------------------
+    consumption_by_bus: dict[int, float] = {}
+
+    if net.load.empty:
+        raise ValueError(
+            "net.load is empty. Behind-the-meter projects require "
+            "positive consumption at their connection busbars."
+        )
+
+    for load_idx, load in net.load.iterrows():
+        try:
+            bus_idx = int(load["bus"])
+            p_mw = float(load["p_mw"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if not np.isfinite(p_mw):
+            continue
+
+        if "in_service" in net.load.columns:
+            in_service_value = load.get(
+                "in_service",
+                True,
+            )
+
+            in_service = (
+                True
+                if pd.isna(in_service_value)
+                else bool(in_service_value)
+            )
+        else:
+            in_service = True
+
+        if not in_service:
+            continue
+
+        if "scaling" in net.load.columns:
+            scaling_value = load.get(
+                "scaling",
+                1.0,
+            )
+
+            scaling = (
+                1.0
+                if pd.isna(scaling_value)
+                else float(scaling_value)
+            )
+        else:
+            scaling = 1.0
+
+        if not np.isfinite(scaling):
+            continue
+
+        scaled_consumption_mw = p_mw * scaling
+
+        if scaled_consumption_mw <= 0.0:
+            continue
+
+        consumption_by_bus[bus_idx] = (
+            consumption_by_bus.get(bus_idx, 0.0)
+            + scaled_consumption_mw
+        )
+
+    if not consumption_by_bus:
+        raise ValueError(
+            "No positive in-service scaled consumption was found "
+            "in net.load."
+        )
+
+    # --------------------------------------------------------------
+    # Calculate existing BTM generation at each bus
+    # --------------------------------------------------------------
+    existing_btm_by_bus: dict[int, float] = {}
+
+    if (
+        not net.sgen.empty
+        and "source" in net.sgen.columns
+    ):
+        existing_btm_mask = (
+            net.sgen["source"].eq(source_tag)
+        )
+
+        if "in_service" in net.sgen.columns:
+            existing_btm_mask &= (
+                net.sgen["in_service"]
+                .fillna(True)
+                .astype(bool)
+            )
+
+        existing_btm = net.sgen.loc[
+            existing_btm_mask
+        ]
+
+        for sgen_idx, sgen in existing_btm.iterrows():
+            try:
+                bus_idx = int(sgen["bus"])
+                p_mw = float(sgen["p_mw"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            if not np.isfinite(p_mw):
+                continue
+
+            if "scaling" in net.sgen.columns:
+                scaling_value = sgen.get(
+                    "scaling",
+                    1.0,
+                )
+
+                scaling = (
+                    1.0
+                    if pd.isna(scaling_value)
+                    else float(scaling_value)
+                )
+            else:
+                scaling = 1.0
+
+            if not np.isfinite(scaling):
+                continue
+
+            effective_generation_mw = p_mw * scaling
+
+            if effective_generation_mw <= 0.0:
+                continue
+
+            existing_btm_by_bus[bus_idx] = (
+                existing_btm_by_bus.get(
+                    bus_idx,
+                    0.0,
+                )
+                + effective_generation_mw
+            )
+
+    # --------------------------------------------------------------
+    # Find eligible MV buses and their available headroom
+    # --------------------------------------------------------------
+    eligible_buses: list[
+        tuple[int, str, float, float]
+    ] = []
+
+    for bus_idx in net.bus.index:
+        try:
+            integer_bus_idx = int(bus_idx)
+            vn_kv = float(
+                net.bus.at[bus_idx, "vn_kv"]
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if not np.isfinite(vn_kv):
+            continue
+
+        if "in_service" in net.bus.columns:
+            bus_service_value = net.bus.at[
+                bus_idx,
+                "in_service",
+            ]
+
+            bus_in_service = (
+                True
+                if pd.isna(bus_service_value)
+                else bool(bus_service_value)
+            )
+        else:
+            bus_in_service = True
+
+        if not bus_in_service:
+            continue
+
+        # MV default: greater than 1 kV and at most 35 kV.
+        if not (
+            vn_kv > min_voltage_kv
+            and vn_kv <= max_voltage_kv
+        ):
+            continue
+
+        consumption_mw = consumption_by_bus.get(
+            integer_bus_idx,
+            0.0,
+        )
+
+        if consumption_mw <= 0.0:
+            continue
+
+        existing_btm_mw = existing_btm_by_bus.get(
+            integer_bus_idx,
+            0.0,
+        )
+
+        headroom_mw = (
+            consumption_mw
+            - existing_btm_mw
+            - consumption_margin_mw
+        )
+
+        if headroom_mw <= 0.0:
+            continue
+
+        bus_name = bus_name_by_index.get(
+            integer_bus_idx
+        )
+
+        if bus_name is None:
+            if "name" in net.bus.columns:
+                stored_bus_name = net.bus.at[
+                    bus_idx,
+                    "name",
+                ]
+
+                bus_name = (
+                    str(stored_bus_name)
+                    if pd.notna(stored_bus_name)
+                    else str(integer_bus_idx)
+                )
+            else:
+                bus_name = str(integer_bus_idx)
+
+        eligible_buses.append(
+            (
+                integer_bus_idx,
+                bus_name,
+                consumption_mw,
+                headroom_mw,
+            )
+        )
+
+    if not eligible_buses:
+        raise ValueError(
+            "No eligible in-service MV busbar has positive "
+            "consumption headroom."
+        )
+
+    total_headroom_mw = sum(
+        bus[3]
+        for bus in eligible_buses
+    )
+
+    if total_capacity_mw > (
+        total_headroom_mw
+        + capacity_tolerance_mw
+    ):
+        raise ValueError(
+            f"The requested {total_capacity_mw:.6f} MW of "
+            f"behind-the-meter generation exceeds the total "
+            f"available MV consumption headroom of "
+            f"{total_headroom_mw:.6f} MW. Reduce the requested "
+            f"capacity or increase the modelled consumption."
+        )
+
+        # --------------------------------------------------------------
+    # Allocate aggregate capacity among usable buses
+    # --------------------------------------------------------------
+    # A bus can be used only if its available headroom can accommodate
+    # at least one minimum-size project.
+    usable_buses = [
+        bus
+        for bus in eligible_buses
+        if bus[3] >= (
+            effective_minimum_project_mw
+            - capacity_tolerance_mw
+        )
+    ]
+
+    if not usable_buses:
+        raise ValueError(
+            "No eligible MV bus has enough consumption headroom "
+            f"for the minimum project size of "
+            f"{min_project_kw:.3f} kW."
+        )
+
+    usable_headroom_mw = sum(
+        bus[3]
+        for bus in usable_buses
+    )
+
+    if total_capacity_mw > (
+        usable_headroom_mw
+        + capacity_tolerance_mw
+    ):
+        raise ValueError(
+            f"The requested {total_capacity_mw:.6f} MW cannot "
+            f"be placed while maintaining a minimum project size "
+            f"of {min_project_kw:.3f} kW. MV buses capable of "
+            f"hosting at least one project provide only "
+            f"{usable_headroom_mw:.6f} MW of usable consumption "
+            f"headroom."
+        )
+
+    # Iteratively remove buses whose proportional allocation would
+    # be smaller than the minimum project size. Their capacity is
+    # redistributed among the remaining buses.
+    active_buses = usable_buses.copy()
+
+    while True:
+        active_headroom_mw = sum(
+            bus[3]
+            for bus in active_buses
+        )
+
+        if total_capacity_mw > (
+            active_headroom_mw
+            + capacity_tolerance_mw
+        ):
+            raise ValueError(
+                f"The requested {total_capacity_mw:.6f} MW cannot "
+                f"be distributed among MV buses without exceeding "
+                f"their consumption. Remaining usable headroom is "
+                f"{active_headroom_mw:.6f} MW."
+            )
+
+        penetration_ratio = (
+            total_capacity_mw
+            / active_headroom_mw
+        )
+
+        undersized_bus_positions = [
+            position
+            for position, bus in enumerate(active_buses)
+            if (
+                bus[3] * penetration_ratio
+                < (
+                    effective_minimum_project_mw
+                    - capacity_tolerance_mw
+                )
+            )
+        ]
+
+        if not undersized_bus_positions:
+            break
+
+        undersized_positions_set = set(
+            undersized_bus_positions
+        )
+
+        active_buses = [
+            bus
+            for position, bus in enumerate(active_buses)
+            if position not in undersized_positions_set
+        ]
+
+        if not active_buses:
+            raise ValueError(
+                "No MV bus remains after enforcing the minimum "
+                f"project size of {min_project_kw:.3f} kW."
+            )
+
+    # Each remaining bus gets a share proportional to its available
+    # consumption headroom.
+    bus_allocations: list[
+        tuple[int, str, float, float, float]
+    ] = []
+
+    for (
+        bus_idx,
+        bus_name,
+        consumption_mw,
+        headroom_mw,
+    ) in active_buses:
+        allocated_mw = (
+            headroom_mw
+            * penetration_ratio
+        )
+
+        bus_allocations.append(
+            (
+                bus_idx,
+                bus_name,
+                consumption_mw,
+                headroom_mw,
+                allocated_mw,
+            )
+        )
+
+    # --------------------------------------------------------------
+    # Close floating-point allocation residual
+    # --------------------------------------------------------------
+    allocated_total_mw = sum(
+        allocation[4]
+        for allocation in bus_allocations
+    )
+
+    allocation_residual_mw = (
+        total_capacity_mw
+        - allocated_total_mw
+    )
+
+    if (
+        abs(allocation_residual_mw)
+        > capacity_tolerance_mw
+    ):
+        mutable_allocations = [
+            list(allocation)
+            for allocation in bus_allocations
+        ]
+
+        if allocation_residual_mw > 0.0:
+            # Add the residual to the bus with the most spare
+            # consumption headroom.
+            adjustment_position = max(
+                range(len(mutable_allocations)),
+                key=lambda position: (
+                    mutable_allocations[position][3]
+                    - mutable_allocations[position][4]
+                ),
+            )
+
+            available_headroom_mw = (
+                mutable_allocations[
+                    adjustment_position
+                ][3]
+                - mutable_allocations[
+                    adjustment_position
+                ][4]
+            )
+
+            if (
+                available_headroom_mw
+                + capacity_tolerance_mw
+                < allocation_residual_mw
+            ):
+                raise RuntimeError(
+                    "Insufficient bus headroom to close the "
+                    "capacity-allocation residual."
+                )
+
+            mutable_allocations[
+                adjustment_position
+            ][4] += allocation_residual_mw
+
+        else:
+            # Remove the residual from a bus while keeping its
+            # allocation large enough for at least one project.
+            required_reduction_mw = abs(
+                allocation_residual_mw
+            )
+
+            adjustable_positions = [
+                position
+                for position, allocation
+                in enumerate(mutable_allocations)
+                if (
+                    allocation[4]
+                    - effective_minimum_project_mw
+                    >= (
+                        required_reduction_mw
+                        - capacity_tolerance_mw
+                    )
+                )
+            ]
+
+            if not adjustable_positions:
+                raise RuntimeError(
+                    "No bus allocation can absorb the negative "
+                    "floating-point residual while preserving the "
+                    "minimum project size."
+                )
+
+            adjustment_position = max(
+                adjustable_positions,
+                key=lambda position: (
+                    mutable_allocations[position][4]
+                ),
+            )
+
+            mutable_allocations[
+                adjustment_position
+            ][4] -= required_reduction_mw
+
+        bus_allocations = [
+            tuple(allocation)
+            for allocation in mutable_allocations
+        ]
+
+    # --------------------------------------------------------------
+    # Validate aggregate bus allocations
+    # --------------------------------------------------------------
+    final_allocated_total_mw = sum(
+        allocation[4]
+        for allocation in bus_allocations
+    )
+
+    if not np.isclose(
+        final_allocated_total_mw,
+        total_capacity_mw,
+        atol=capacity_tolerance_mw,
+        rtol=0.0,
+    ):
+        raise RuntimeError(
+            f"Bus allocation mismatch: requested "
+            f"{total_capacity_mw:.9f} MW, allocated "
+            f"{final_allocated_total_mw:.9f} MW."
+        )
+
+    for (
+        bus_idx,
+        bus_name,
+        consumption_mw,
+        headroom_mw,
+        allocated_mw,
+    ) in bus_allocations:
+        if allocated_mw < (
+            effective_minimum_project_mw
+            - capacity_tolerance_mw
+        ):
+            raise RuntimeError(
+                f"Bus {bus_idx} ('{bus_name}') received only "
+                f"{allocated_mw * 1000.0:.6f} kW, below the "
+                f"minimum project size of "
+                f"{min_project_kw:.6f} kW."
+            )
+
+        if allocated_mw > (
+            headroom_mw
+            + capacity_tolerance_mw
+        ):
+            raise RuntimeError(
+                f"Bus {bus_idx} ('{bus_name}') was allocated "
+                f"{allocated_mw:.9f} MW but has only "
+                f"{headroom_mw:.9f} MW of consumption headroom."
+            )
+
+    # --------------------------------------------------------------
+    # Generate a bounded normal portfolio for one bus
+    # --------------------------------------------------------------
+    def _generate_bus_projects(
+        allocated_mw: float,
+    ) -> np.ndarray:
+        """
+        Split one bus's allocation into normally distributed projects
+        while preserving the exact aggregate allocation.
+        """
+
+                # The allocation must be able to accommodate at least one
+        # minimum-size project.
+        if allocated_mw < (
+            effective_minimum_project_mw
+            - capacity_tolerance_mw
+        ):
+            raise ValueError(
+                f"Bus allocation of "
+                f"{allocated_mw * 1000.0:.6f} kW is smaller "
+                f"than the minimum project size of "
+                f"{min_project_kw:.6f} kW."
+            )
+
+        # At least this many projects are required to keep every
+        # individual project at or below max_project_mw.
+        minimum_project_count = max(
+            1,
+            int(
+                np.ceil(
+                    allocated_mw
+                    / max_project_mw
+                    - 1e-12
+                )
+            ),
+        )
+
+        # No more than this many projects are possible without
+        # placing at least one project below min_project_mw.
+        maximum_project_count = int(
+            np.floor(
+                allocated_mw
+                / effective_minimum_project_mw
+                + 1e-12
+            )
+        )
+
+        if (
+            maximum_project_count
+            < minimum_project_count
+        ):
+            raise ValueError(
+                f"Bus allocation of "
+                f"{allocated_mw * 1000.0:.6f} kW cannot be "
+                f"divided into projects between "
+                f"{min_project_kw:.6f} and "
+                f"{max_project_kw:.6f} kW."
+            )
+
+        # Select a project count that gives approximately the requested
+        # 250 kW mean, bounded by the feasible count interval.
+        estimated_project_count = int(
+            round(
+                allocated_mw
+                / mean_project_mw
+            )
+        )
+
+        project_count = int(
+            np.clip(
+                estimated_project_count,
+                minimum_project_count,
+                maximum_project_count,
+            )
+        )
+
+        if project_count < 1:
+            raise RuntimeError(
+                f"Internal error: project_count={project_count} "
+                f"for bus allocation "
+                f"{allocated_mw:.9f} MW."
+            )
+
+        # Draw from the normal distribution and reject values outside
+        # the requested project-size interval.
+        raw_capacities = np.empty(
+            project_count,
+            dtype=float,
+        )
+
+        for project_position in range(
+            project_count
+        ):
+            for _ in range(10000):
+                sampled_mw = float(
+                    rng.normal(
+                        mean_project_mw,
+                        std_project_mw,
+                    )
+                )
+
+                if (
+                    sampled_mw
+                    > effective_minimum_project_mw
+                    and sampled_mw
+                    <= max_project_mw
+                ):
+                    raw_capacities[
+                        project_position
+                    ] = sampled_mw
+                    break
+            else:
+                raw_capacities[
+                    project_position
+                ] = min(
+                    max(
+                        mean_project_mw,
+                        effective_minimum_project_mw,
+                    ),
+                    max_project_mw,
+                )
+
+        # Find a common offset that makes the sum exact while preserving
+        # the lower and upper project-size limits.
+        lower_offset = (
+            effective_minimum_project_mw
+            - float(raw_capacities.max())
+        )
+
+        upper_offset = (
+            max_project_mw
+            - float(raw_capacities.min())
+        )
+
+        capacities = raw_capacities.copy()
+
+        for _ in range(100):
+            offset = (
+                lower_offset + upper_offset
+            ) / 2.0
+
+            capacities = np.clip(
+                raw_capacities + offset,
+                effective_minimum_project_mw,
+                max_project_mw,
+            )
+
+            if float(
+                capacities.sum()
+            ) < allocated_mw:
+                lower_offset = offset
+            else:
+                upper_offset = offset
+
+        capacities = np.clip(
+            raw_capacities
+            + (
+                lower_offset + upper_offset
+            )
+            / 2.0,
+            effective_minimum_project_mw,
+            max_project_mw,
+        )
+
+        residual_mw = (
+            allocated_mw
+            - float(capacities.sum())
+        )
+
+        if (
+            abs(residual_mw)
+            > capacity_tolerance_mw
+        ):
+            for project_position in rng.permutation(
+                project_count
+            ):
+                if (
+                    abs(residual_mw)
+                    <= capacity_tolerance_mw
+                ):
+                    break
+
+                if residual_mw > 0.0:
+                    available_mw = (
+                        max_project_mw
+                        - capacities[project_position]
+                    )
+
+                    adjustment_mw = min(
+                        residual_mw,
+                        available_mw,
+                    )
+
+                    capacities[
+                        project_position
+                    ] += adjustment_mw
+
+                    residual_mw -= adjustment_mw
+
+                else:
+                    available_mw = (
+                        capacities[project_position]
+                        - effective_minimum_project_mw
+                    )
+
+                    adjustment_mw = min(
+                        abs(residual_mw),
+                        available_mw,
+                    )
+
+                    capacities[
+                        project_position
+                    ] -= adjustment_mw
+
+                    residual_mw += adjustment_mw
+
+        if not np.isclose(
+            float(capacities.sum()),
+            allocated_mw,
+            atol=capacity_tolerance_mw,
+            rtol=0.0,
+        ):
+            raise RuntimeError(
+                f"Could not split {allocated_mw:.9f} MW "
+                f"into valid project capacities."
+            )
+
+        return capacities
+
+    # --------------------------------------------------------------
+    # Create sgen elements
+    # --------------------------------------------------------------
+    generator_map: dict[
+        str,
+        tuple[str, int],
+    ] = {}
+
+    created_indices: list[int] = []
+    created_by_bus: dict[int, float] = {}
+    project_counter = 0
+
+    # Randomize creation order without changing aggregate bus allocation.
+    allocation_order = rng.permutation(
+        len(bus_allocations)
+    )
+
+    for allocation_position in allocation_order:
+        (
+            bus_idx,
+            bus_name,
+            consumption_mw,
+            headroom_mw,
+            allocated_mw,
+        ) = bus_allocations[
+            int(allocation_position)
+        ]
+
+        project_capacities = (
+            _generate_bus_projects(
+                allocated_mw
+            )
+        )
+
+        rng.shuffle(project_capacities)
+
+        for (
+            local_project_number,
+            project_capacity_mw,
+        ) in enumerate(
+            project_capacities,
+            start=1,
+        ):
+            project_counter += 1
+
+            project_name = (
+                f"BTM_MV_{project_counter:05d}_"
+                f"{bus_idx}_"
+                f"{local_project_number:03d}"
+            )
+
+            sgen_idx = pp.create_sgen(
+                net,
+                bus=bus_idx,
+                p_mw=float(
+                    project_capacity_mw
+                ),
+                q_mvar=0.0,
+                sn_mva=float(
+                    project_capacity_mw
+                ),
+                scaling=1.0,
+                name=project_name,
+                type=TECHNOLOGY_SOLAR,
+                in_service=True,
+            )
+
+            net.sgen.at[
+                sgen_idx,
+                "technology",
+            ] = TECHNOLOGY_SOLAR
+
+            net.sgen.at[
+                sgen_idx,
+                "source",
+            ] = source_tag
+
+            net.sgen.at[
+                sgen_idx,
+                "voltage_level",
+            ] = f"{net.bus.at[bus_idx, 'vn_kv']} kV"
+
+            net.sgen.at[
+                sgen_idx,
+                "project_capacity_kw",
+            ] = (
+                float(project_capacity_mw)
+                * 1000.0
+            )
+
+            net.sgen.at[
+                sgen_idx,
+                "connection_bus_name",
+            ] = bus_name
+
+            net.sgen.at[
+                sgen_idx,
+                "bus_consumption_mw",
+            ] = consumption_mw
+
+            net.sgen.at[
+                sgen_idx,
+                "btm_bus_allocation_mw",
+            ] = allocated_mw
+
+            generator_map[
+                project_name
+            ] = (
+                "sgen",
+                sgen_idx,
+            )
+
+            created_indices.append(
+                sgen_idx
+            )
+
+            created_by_bus[bus_idx] = (
+                created_by_bus.get(
+                    bus_idx,
+                    0.0,
+                )
+                + float(project_capacity_mw)
+            )
+
+    # --------------------------------------------------------------
+    # Final validation
+    # --------------------------------------------------------------
+    created_sgens = net.sgen.loc[
+        created_indices
+    ]
+
+    created_total_mw = float(
+        created_sgens["p_mw"].sum()
+    )
+
+    if not np.isclose(
+        created_total_mw,
+        total_capacity_mw,
+        atol=capacity_tolerance_mw,
+        rtol=0.0,
+    ):
+        raise RuntimeError(
+            f"Behind-the-meter capacity mismatch: requested "
+            f"{total_capacity_mw:.9f} MW, created "
+            f"{created_total_mw:.9f} MW."
+        )
+
+    violations: list[str] = []
+
+    for (
+        bus_idx,
+        new_generation_mw,
+    ) in created_by_bus.items():
+        consumption_mw = (
+            consumption_by_bus[bus_idx]
+        )
+
+        existing_btm_mw = (
+            existing_btm_by_bus.get(
+                bus_idx,
+                0.0,
+            )
+        )
+
+        total_btm_mw = (
+            existing_btm_mw
+            + new_generation_mw
+        )
+
+        if total_btm_mw >= consumption_mw:
+            violations.append(
+                f"bus={bus_idx}, "
+                f"consumption={consumption_mw:.9f} MW, "
+                f"BTM={total_btm_mw:.9f} MW"
+            )
+
+    if violations:
+        raise RuntimeError(
+            "Behind-the-meter generation is not below "
+            "consumption at the following buses: "
+            + "; ".join(violations)
+        )
+
+    minimum_project_kw_created = float(
+        created_sgens["p_mw"].min()
+        * 1000.0
+    )
+
+    maximum_project_kw_created = float(
+        created_sgens["p_mw"].max()
+        * 1000.0
+    )
+
+    mean_project_kw_created = float(
+        created_sgens["p_mw"].mean()
+        * 1000.0
+    )
+
+    used_bus_count = int(
+        created_sgens["bus"].nunique()
+    )
+
+    print(
+        f"[generator_builder] Created "
+        f"{len(created_indices)} behind-the-meter MV solar "
+        f"sgen elements on {used_bus_count} busbars."
+    )
+
+    print(
+        f"[generator_builder] BTM capacity: "
+        f"requested={total_capacity_mw:.6f} MW, "
+        f"created={created_total_mw:.6f} MW."
+    )
+
+    print(
+        f"[generator_builder] BTM project sizes: "
+        f"minimum={minimum_project_kw_created:.3f} kW, "
+        f"mean={mean_project_kw_created:.3f} kW, "
+        f"maximum={maximum_project_kw_created:.3f} kW."
+    )
+
+    print(
+        f"[generator_builder] MV consumption headroom: "
+        f"{total_headroom_mw:.6f} MW; "
+        f"portfolio penetration ratio="
+        f"{penetration_ratio:.6f}; "
+        f"random_seed={random_seed}."
+    )
+
+    gen_map = generator_map
 
     return gen_map
 

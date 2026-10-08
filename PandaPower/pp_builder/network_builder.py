@@ -11,14 +11,14 @@ from pandas import read_excel
 import math
 
 from pp_builder.geo_placement import place_unknown_buses
-from pp_builder.config import RATING_SEASON_SUMMER
+from pp_builder.config import RATING_SEASON_SUMMER, _DISTRIBUTED_PV_DEFAULT_TOTAL_MW
 from pp_builder.excel_reader import read_excelsheets
 from pp_builder.busbar_builder     import build_busbars
 from pp_builder.branch_builder     import build_branches
 from pp_builder.transformer_2w_builder import build_transformers
 from pp_builder.transformer_3w_builder import build_transformers_3w
 from pp_builder.load_builder       import build_loads, scale_loads_to_target
-from pp_builder.generator_builder import build_generators, build_mekh_generators, build_hmke_generators
+from pp_builder.generator_builder import build_behind_meter_mv_generators, build_distributed_solar_22kv, build_generators, build_mekh_generators, build_hmke_generators
 from pp_builder.ext_grid_builder   import build_ext_grids
 from pp_builder.shunt_builder      import build_shunts
 
@@ -121,6 +121,8 @@ class NetworkBuilder:
         self.gen_map    = build_generators(self.net, sheets, self.bus_map, season=season)
         self.gen_map.update(build_mekh_generators(self.net, MEKH_list, self.bus_map, season=season))
         self.gen_map.update(build_hmke_generators(self.net, HMKE_excel_path, self.bus_map, season=season))
+        self.gen_map.update(build_distributed_solar_22kv(self.net, self.bus_map, total_capacity_mw=_DISTRIBUTED_PV_DEFAULT_TOTAL_MW, season=season, min_project_kw=50, max_project_kw=500))
+        self.gen_map.update(build_behind_meter_mv_generators(net=self.net, bus_map=self.bus_map, total_capacity_mw=810.0, mean_project_kw=250.0,std_project_kw=150.0, min_project_kw=50.0, max_project_kw=2000.0, random_seed=42))
         self.ext_grid_map = build_ext_grids(self.net, sheets, self.bus_map)
         self.shunt_map = build_shunts(self.net, sheets, self.bus_map)
 

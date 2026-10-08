@@ -26,7 +26,7 @@ if building:
         target_load_mw=6400.0,  # Scale all loads to this total MW value
     )
 else:
-    net = builder.load("PandaPower/models/model_20260831_120219.json")
+    net = builder.load("PandaPower/models/model_20261008_140307.json")
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 

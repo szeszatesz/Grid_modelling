@@ -69,6 +69,7 @@ class NetworkBuilder:
         f_hz: float = 50.0,
         sn_mva: float = 100.0,
         target_load_mw: float | None = None,
+        battery_mode: float = 0.0,  # Battery mode: -1=discharging, 0=idle, +1=charging
     ) -> pp.pandapowerNet:
         """
         Read Excel, create pandapower network, optionally save to file.
@@ -119,7 +120,7 @@ class NetworkBuilder:
         self.trafo3w_map = build_transformers_3w(self.net, sheets, self.bus_map)
         self.load_map   = build_loads(self.net, sheets, self.bus_map)
         self.gen_map    = build_generators(self.net, sheets, self.bus_map, season=season)
-        self.gen_map.update(build_mekh_generators(self.net, MEKH_list, self.bus_map, season=season))
+        self.gen_map.update(build_mekh_generators(self.net, MEKH_list, self.bus_map, season=season, battery_mode=battery_mode))
         self.gen_map.update(build_hmke_generators(self.net, HMKE_excel_path, self.bus_map, season=season))
         self.gen_map.update(build_distributed_solar_22kv(self.net, self.bus_map, total_capacity_mw=_DISTRIBUTED_PV_DEFAULT_TOTAL_MW, season=season, min_project_kw=50, max_project_kw=500))
         self.gen_map.update(build_behind_meter_mv_generators(net=self.net, bus_map=self.bus_map, total_capacity_mw=810.0, mean_project_kw=250.0,std_project_kw=150.0, min_project_kw=50.0, max_project_kw=2000.0, random_seed=42))

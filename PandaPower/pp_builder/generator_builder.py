@@ -880,25 +880,177 @@ def _create_mekh_element(
     name: str,
     season: str,
     voltage_level: str,
+    battery_mode: float = 0.0,
 ) -> tuple[int, str]:
     """
-    Create a single MEKH-sourced generation/storage element.
+    Create one MEKH generation or battery element.
 
-    Units with installed capacity (sn_mva) above
-    _MEKH_VOLTAGE_CONTROL_THRESHOLD_MVA (5 MW) are modelled as
-    voltage-controllable PV nodes (pp.create_gen), with reactive power
-    limits of +/- 30% of their rated capacity (_MEKH_REACTIVE_CAPABILITY_RATIO).
-    Smaller units remain plain PQ injections (pp.create_sgen).
+    Battery operation is controlled by battery_mode:
+
+        -1.0 <= battery_mode < 0.0:
+            Charging/consumption.
+
+        battery_mode == 0.0:
+            Idle; no active or reactive power exchange.
+
+        0.0 < battery_mode <= 1.0:
+            Discharging/production.
+
+    Battery active power is:
+
+        sn_mva * abs(battery_mode)
+
+    Batteries are always non-voltage-controlling.
 
     Returns
     -------
-    (index, table) : tuple[int, str]
-        table is "gen" or "sgen".
+    tuple[int, str]
+        Element index and pandapower table name:
+        "gen", "sgen", or "load".
     """
-    scaling = TECH_SCALING_DEFAULTS.get(technology, {}).get(season, DEFAULT_GEN_SCALING)
 
-    if sn_mva > _MEKH_VOLTAGE_CONTROL_THRESHOLD_MVA:
-        q_capability = sn_mva * _MEKH_REACTIVE_CAPABILITY_RATIO
+    sn_mva = float(sn_mva)
+    battery_mode = float(battery_mode)
+
+    if not np.isfinite(sn_mva) or sn_mva <= 0.0:
+        raise ValueError(
+            f"Invalid MEKH capacity for '{name}': "
+            f"sn_mva={sn_mva!r}."
+        )
+
+    if not np.isfinite(battery_mode):
+        raise ValueError(
+            "battery_mode must be a finite number."
+        )
+
+    if not -1.0 <= battery_mode <= 1.0:
+        raise ValueError(
+            f"battery_mode must be between -1.0 and +1.0; "
+            f"received {battery_mode!r}."
+        )
+
+    # --------------------------------------------------------------
+    # Battery
+    # --------------------------------------------------------------
+    if technology == TECHNOLOGY_BATTERY:
+        operating_power_mw = (
+            sn_mva * abs(battery_mode)
+        )
+
+        if battery_mode < 0.0:
+            # Positive load means consumption in pandapower.
+            battery_state = "charging"
+
+            idx = pp.create_load(
+                net,
+                bus=bus_idx,
+                p_mw=operating_power_mw,
+                q_mvar=0.0,
+                sn_mva=sn_mva,
+                scaling=1.0,
+                name=name,
+                type=technology,
+                in_service=True,
+            )
+
+            net.load.at[
+                idx, "technology"
+            ] = TECHNOLOGY_BATTERY
+
+            net.load.at[
+                idx, "voltage_level"
+            ] = voltage_level
+
+            net.load.at[
+                idx, "source"
+            ] = "MEKH"
+
+            net.load.at[
+                idx, "battery_mode"
+            ] = battery_mode
+
+            net.load.at[
+                idx, "battery_state"
+            ] = battery_state
+
+            net.load.at[
+                idx, "rated_power_mw"
+            ] = sn_mva
+
+            net.load.at[
+                idx, "operating_power_mw"
+            ] = operating_power_mw
+
+            return idx, "load"
+
+        # Idle and discharging batteries are represented as sgen.
+        if battery_mode > 0.0:
+            battery_state = "discharging"
+        else:
+            battery_state = "idle"
+
+        idx = pp.create_sgen(
+            net,
+            bus=bus_idx,
+            p_mw=operating_power_mw,
+            q_mvar=0.0,
+            sn_mva=sn_mva,
+            scaling=1.0,
+            name=name,
+            type=technology,
+            in_service=True,
+        )
+
+        net.sgen.at[
+            idx, "technology"
+        ] = TECHNOLOGY_BATTERY
+
+        net.sgen.at[
+            idx, "voltage_level"
+        ] = voltage_level
+
+        net.sgen.at[
+            idx, "source"
+        ] = "MEKH"
+
+        net.sgen.at[
+            idx, "battery_mode"
+        ] = battery_mode
+
+        net.sgen.at[
+            idx, "battery_state"
+        ] = battery_state
+
+        net.sgen.at[
+            idx, "rated_power_mw"
+        ] = sn_mva
+
+        net.sgen.at[
+            idx, "operating_power_mw"
+        ] = operating_power_mw
+
+        return idx, "sgen"
+
+    # --------------------------------------------------------------
+    # Solar and wind
+    # --------------------------------------------------------------
+    scaling = TECH_SCALING_DEFAULTS.get(
+        technology,
+        {},
+    ).get(
+        season,
+        DEFAULT_GEN_SCALING,
+    )
+
+    if (
+        sn_mva
+        > _MEKH_VOLTAGE_CONTROL_THRESHOLD_MVA
+    ):
+        q_capability = (
+            sn_mva
+            * _MEKH_REACTIVE_CAPABILITY_RATIO
+        )
+
         idx = pp.create_gen(
             net,
             bus=bus_idx,
@@ -912,9 +1064,19 @@ def _create_mekh_element(
             max_q_mvar=q_capability,
             min_q_mvar=-q_capability,
         )
-        net.gen.at[idx, "technology"] = technology
-        net.gen.at[idx, "voltage_level"] = voltage_level
-        net.gen.at[idx, "source"] = "MEKH"
+
+        net.gen.at[
+            idx, "technology"
+        ] = technology
+
+        net.gen.at[
+            idx, "voltage_level"
+        ] = voltage_level
+
+        net.gen.at[
+            idx, "source"
+        ] = "MEKH"
+
         return idx, "gen"
 
     idx = pp.create_sgen(
@@ -928,9 +1090,19 @@ def _create_mekh_element(
         type=technology,
         in_service=True,
     )
-    net.sgen.at[idx, "technology"] = technology
-    net.sgen.at[idx, "voltage_level"] = voltage_level
-    net.sgen.at[idx, "source"] = "MEKH"
+
+    net.sgen.at[
+        idx, "technology"
+    ] = technology
+
+    net.sgen.at[
+        idx, "voltage_level"
+    ] = voltage_level
+
+    net.sgen.at[
+        idx, "source"
+    ] = "MEKH"
+
     return idx, "sgen"
 
 
@@ -1070,6 +1242,7 @@ def build_mekh_generators(
     mekh_df: pd.DataFrame,
     bus_map: dict[str, int],
     season: str = RATING_SEASON_SUMMER,
+    battery_mode: float = 0.0,
     geolocator=None,
     geocode_cache_path: str = _DEFAULT_GEOCODE_CACHE_PATH,
 ) -> dict[str, int]:
@@ -1144,6 +1317,26 @@ def build_mekh_generators(
     cache_size_at_start = len(geocode_cache)
     n_cache_hits = 0
     n_live_geocodes = 0
+
+    battery_mode = float(battery_mode)
+
+    if not np.isfinite(battery_mode):
+        raise ValueError(
+            "battery_mode must be a finite number."
+        )
+
+    if not -1.0 <= battery_mode <= 1.0:
+        raise ValueError(
+            f"battery_mode must be between -1.0 and +1.0; "
+            f"received {battery_mode!r}."
+        )
+
+    if battery_mode < 0.0:
+        battery_state = "charging"
+    elif battery_mode > 0.0:
+        battery_state = "discharging"
+    else:
+        battery_state = "idle"
 
     for i, row in mekh_df.iterrows():
         owner = str(row.get(col_owner, "")).strip()
@@ -1222,7 +1415,7 @@ def build_mekh_generators(
             if sn_mva:
                 name = f"MEKH_{battery_technology}_{bus_name}_{owner}_{i}"
                 idx, table = _create_mekh_element(
-                    net, bus_idx, sn_mva, battery_technology, name, season, voltage_level
+                    net, bus_idx, sn_mva, battery_technology, name, season, voltage_level, battery_mode
                 )
                 gen_map[name] = (table, idx)
 
@@ -1247,11 +1440,15 @@ def build_mekh_generators(
 
     n_gen  = sum(1 for v in gen_map.values() if v[0] == "gen")
     n_sgen = sum(1 for v in gen_map.values() if v[0] == "sgen")
-    print(f"[generator_builder]  Created {n_gen} gen (PV, >{_MEKH_VOLTAGE_CONTROL_THRESHOLD_MVA:.0f} MW, "
-          f"+/-{_MEKH_REACTIVE_CAPABILITY_RATIO:.0%} Q capability) + "
-          f"{n_sgen} sgen (PQ, <= {_MEKH_VOLTAGE_CONTROL_THRESHOLD_MVA:.0f} MW) from MEKH list "
-          f"(solar/wind/battery), season={season}. "
-          f"Geocode cache: '{geocode_cache_path}' ({len(geocode_cache)} entries).")
+    n_load = sum(1 for v in gen_map.values() if v[0] == "load")
+    print(
+        f"[generator_builder] Created "
+        f"{n_gen} gen + {n_sgen} sgen + "
+        f"{n_load} battery load elements from MEKH; "
+        f"battery_mode={battery_mode:+.3f}, "
+        f"battery_state={battery_state}, "
+        f"season={season}."
+    )
 
     return gen_map
 

@@ -24,6 +24,7 @@ if building:
         f_hz=50.0,
         sn_mva=100.0,
         target_load_mw=6400.0,  # Scale all loads to this total MW value
+        battery_mode=-1.0,  # Battery mode: -1=discharging, 0=idle, +1=charging
     )
 else:
     net = builder.load("PandaPower/models/model_20261008_140307.json")

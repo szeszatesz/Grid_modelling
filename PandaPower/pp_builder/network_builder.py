@@ -69,7 +69,7 @@ class NetworkBuilder:
         f_hz: float = 50.0,
         sn_mva: float = 100.0,
         target_load_mw: float | None = None,
-        battery_mode: float = 0.0,  # Battery mode: -1=discharging, 0=idle, +1=charging
+        battery_mode: float = 0.0,  # Battery mode: -1 = charging (load), 0 = idle, +1 = discharging (production)
     ) -> pp.pandapowerNet:
         """
         Read Excel, create pandapower network, optionally save to file.

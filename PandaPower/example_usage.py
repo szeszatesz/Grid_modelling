@@ -24,7 +24,7 @@ if building:
         f_hz=50.0,
         sn_mva=100.0,
         target_load_mw=6400.0,  # Scale all loads to this total MW value
-        battery_mode=-1.0,  # Battery mode: -1=discharging, 0=idle, +1=charging
+        battery_mode=-0.7,  # Battery mode: -1 = charging (load), 0 = idle, +1 = discharging (production)
     )
 else:
     net = builder.load("PandaPower/models/model_20261008_140307.json")
@@ -44,7 +44,7 @@ if diagnose:
 
 
 # ── 4. Summer load flow ───────────────────────────────────────────────────────
-exe_lf = True
+exe_lf = False
 if exe_lf:
     runner = LoadFlowRunner(net)
     ok = runner.run(

@@ -11,7 +11,7 @@ import datetime
 
 # ── 1. Build the network ──────────────────────────────────────────────────────
 builder = NetworkBuilder()
-building = True
+building = False
 if building:
     net = builder.build(
         excel_path="PandaPower/input_data/2034sn_fp1_tv1_3_none-torf_de_all_v22_celallapot_zarlat_summer_small_load_increase.xlsx",
@@ -24,10 +24,10 @@ if building:
         f_hz=50.0,
         sn_mva=100.0,
         target_load_mw=6400.0,  # Scale all loads to this total MW value
-        battery_mode=-0.7,  # Battery mode: -1 = charging (load), 0 = idle, +1 = discharging (production)
+        battery_mode=-1,  # Battery mode: -1 = charging (load), 0 = idle, +1 = discharging (production)
     )
 else:
-    net = builder.load("PandaPower/models/model_20261008_140307.json")
+    net = builder.load("PandaPower/models/model_20261019_184951.json")
 
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -51,7 +51,7 @@ if exe_lf:
         season=RATING_SEASON_SUMMER,
         
         # per-technology generator overrides (optional):
-        tech_gen_overrides={"WINDONSHORE": 0.85, "SOLARPHOTOVO": 1.00, "BATTERYSTRG": 1.00},
+        tech_gen_overrides={"WINDONSHORE": 1, "SOLARPHOTOVO": 1, "BATTERYSTRG": 1.00},
         enforce_q_lims=True,
         calculate_voltage_angles=False,
         distributed_slack=True,        
@@ -76,3 +76,19 @@ if exe_lf:
 #simple_plotly(net,filename=f"PandaPower/models/network_simple_plotly_{timestamp}.html")
 vlevel_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=10, line_width=1, respect_switches=False, zoomlevel=8, use_line_geo=False, on_map=False, map_style='basic', projection='23700')
 #pf_res_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=10, line_width=1, zoomlevel=8, use_line_geo=False, on_map=True, map_style='basic')
+
+# --- 4. Print summary of the network ---
+print_summary = True
+if print_summary:
+    from model_power_summary import print_model_powers
+
+    summary = print_model_powers(
+        "PandaPower/models/model_20261019_194732.json",
+        output_dir="PandaPower/models/results",
+    )
+
+    print(summary["totals"])
+    print(summary["battery_by_state"])
+    print(summary["battery_by_source"])
+    print(summary["sgen_by_technology_source"])
+    print(summary["gen_by_technology_source"])

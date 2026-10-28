@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping, Hashable
 import pandapower as pp
 
 from .models import Outage, ContingencyResult, ElementRef
@@ -22,6 +22,7 @@ def _inject(net, bus, technologies: list[dict], scale: float, season: str,
             controllable=bool(tech.get("controllable", False)),
             in_service=True, type=technology,
         )
+        net.sgen.at[idx, "technology"] = technology
         created.append(idx)
     return created
 
@@ -33,7 +34,8 @@ def _drop_sgens(net, indices):
 
 
 def _violations(results, *, max_loading_percent, voltage_change_limit_pu,
-                min_voltage_pu, max_voltage_pu, ignored_elements):
+                min_voltage_pu, max_voltage_pu, ignored_elements,
+                bus_nominal_kv, voltage_limits_min_kv):
     return check_violations(
         results,
         max_loading_percent=max_loading_percent,
@@ -41,6 +43,8 @@ def _violations(results, *, max_loading_percent, voltage_change_limit_pu,
         min_voltage_pu=min_voltage_pu,
         max_voltage_pu=max_voltage_pu,
         ignored_elements=ignored_elements,
+        bus_nominal_kv=bus_nominal_kv,
+        voltage_limits_min_kv=voltage_limits_min_kv,
     )
 
 
@@ -53,14 +57,11 @@ def find_max_capacity(net, target_bus, technologies: list[dict],
                       min_voltage_pu: float | None = None,
                       max_voltage_pu: float | None = None,
                       ignored_elements: set[ElementRef] | None = None,
+                      bus_nominal_kv: Mapping[Hashable, float] | None = None,
+                      voltage_limits_min_kv: float | None = None,
                       progress: Callable[[float, int], None] | None = None
                       ) -> tuple[float, list[ContingencyResult]]:
-    """Find the greatest feasible project capacity.
-
-    Important: the zero-project N-1 case is evaluated first. If the existing
-    network is already infeasible, the function returns 0 MW *with those case
-    results*. This prevents an empty/misleading Excel report at 0 MW.
-    """
+    """Find the greatest feasible project capacity."""
     original = sum(float(t["P_MW"]) for t in technologies)
     outages = list(outages)
 
@@ -75,16 +76,16 @@ def find_max_capacity(net, target_bus, technologies: list[dict],
         min_voltage_pu=min_voltage_pu,
         max_voltage_pu=max_voltage_pu,
         ignored_elements=ignored_elements,
+        bus_nominal_kv=bus_nominal_kv,
+        voltage_limits_min_kv=voltage_limits_min_kv,
     )
     if progress:
         progress(0.0, len(zero_violations))
-
     if original <= 0 or zero_violations:
         return 0.0, zero_results
 
     lo, hi = 0.0, original
     best, best_results = 0.0, zero_results
-
     while hi - lo > tolerance_mw:
         trial = (lo + hi) / 2.0
         created = _inject(
@@ -103,15 +104,15 @@ def find_max_capacity(net, target_bus, technologies: list[dict],
                 min_voltage_pu=min_voltage_pu,
                 max_voltage_pu=max_voltage_pu,
                 ignored_elements=ignored_elements,
+                bus_nominal_kv=bus_nominal_kv,
+                voltage_limits_min_kv=voltage_limits_min_kv,
             )
         finally:
             _drop_sgens(net, created)
-
         if progress:
             progress(trial, len(violations))
         if violations:
             hi = trial
         else:
             lo, best, best_results = trial, trial, results
-
     return best, best_results

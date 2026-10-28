@@ -24,7 +24,8 @@ _CASE_COLUMNS = [
 ]
 _VIOLATION_COLUMNS = [
     "case_id", "kind", "element_type", "element_index", "element_name",
-    "value", "limit", "message",
+    "value", "limit", "base_value", "post_value", "delta_value",
+    "pre_existing", "message",
 ]
 _BRANCH_COLUMNS = [
     "case_id", "element_type", "element_index", "element_name",
@@ -69,6 +70,34 @@ def _safe_frame(rows: list[dict], columns: list[str]) -> pd.DataFrame:
     if frame.empty:
         return frame
     return frame.map(_finite)
+
+
+def _flatten_parameters(value: Any, prefix: str = "") -> list[dict]:
+    rows: list[dict] = []
+    if isinstance(value, dict):
+        if not value:
+            rows.append({"parameter": prefix, "value": "{}", "type": "dict"})
+        for key, item in value.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            rows.extend(_flatten_parameters(item, path))
+    elif isinstance(value, (list, tuple, set)):
+        seq = sorted(value, key=str) if isinstance(value, set) else list(value)
+        if not seq:
+            rows.append({"parameter": prefix, "value": "[]", "type": type(value).__name__})
+        for index, item in enumerate(seq):
+            rows.extend(_flatten_parameters(item, f"{prefix}[{index}]"))
+    else:
+        rows.append({
+            "parameter": prefix,
+            "value": _finite(value),
+            "type": "NoneType" if value is None else type(value).__name__,
+        })
+    return rows
+
+
+def _parameter_frame(parameters: dict) -> pd.DataFrame:
+    rows = _flatten_parameters(parameters)
+    return _safe_frame(rows, ["parameter", "value", "type"])
 
 
 def _result_rows(net, results: list[ContingencyResult]):
@@ -180,7 +209,8 @@ def _format_workbook(writer: pd.ExcelWriter, sheet_names: list[str]) -> None:
 
 def write_report(path, net, results: Iterable[ContingencyResult],
                  violations: Iterable[Violation], *,
-                 metadata: dict | None = None) -> Path:
+                 metadata: dict | None = None,
+                 study_parameters: dict | None = None) -> Path:
     """Write a robust, atomic, multi-sheet contingency workbook.
 
     The workbook always contains headers, even if no contingency converged or
@@ -214,6 +244,7 @@ def write_report(path, net, results: Iterable[ContingencyResult],
     violations_df = _safe_frame(violation_rows, _VIOLATION_COLUMNS)
     branches_df = _safe_frame(branch_rows, _BRANCH_COLUMNS)
     buses_df = _safe_frame(bus_rows, _BUS_COLUMNS)
+    parameter_df = _parameter_frame(study_parameters or {})
 
     # Write to a temporary file in the destination directory, then atomically
     # replace the target. A failed export cannot leave a half-written workbook.
@@ -224,9 +255,10 @@ def write_report(path, net, results: Iterable[ContingencyResult],
     try:
         with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
             study_df.to_excel(writer, sheet_name="Study", index=False)
+            parameter_df.to_excel(writer, sheet_name="Parameters", index=False)
             cases_df.to_excel(writer, sheet_name="Cases", index=False)
             violations_df.to_excel(writer, sheet_name="Violations", index=False)
-            written = ["Study", "Cases", "Violations"]
+            written = ["Study", "Parameters", "Cases", "Violations"]
             written += _write_chunked(writer, branches_df, "Branch results")
             written += _write_chunked(writer, buses_df, "Bus results")
             _format_workbook(writer, written)

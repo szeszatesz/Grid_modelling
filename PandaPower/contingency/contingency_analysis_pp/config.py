@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 DEFAULT_GEN_SCALE = {
-    "wind": {"summer": 1, "winter": 1},
+    "wind": {"summer": 1.0, "winter": 1.0},
     "solar": {"summer": 0.5, "winter": 0.20},
-    "battery": {"summer": 0, "winter": 0},
+    "battery": {"summer": 0.0, "winter": 0.0},
 }
 DEFAULT_LOAD_SCALE = {
     "summer": {"P": 1.0, "Q": 1.0},
@@ -14,12 +14,14 @@ DEFAULT_LOAD_SCALE = {
 
 @dataclass(slots=True)
 class StudyConfig:
-    """Numerical limits and solver options for an N-1 study."""
+    """Numerical limits, study scope and solver options for an N-1 study."""
     max_loading_percent: float = 100.0
     voltage_change_limit_pu: float = 0.02
     min_voltage_pu: float | None = None
     max_voltage_pu: float | None = None
+    voltage_limits_min_kv: float | None = 36.0
     capacity_tolerance_mw: float = 1.0
+    scale_existing_generators: bool = True
     load_scales: dict[str, dict[str, float]] = field(
         default_factory=lambda: {k: dict(v) for k, v in DEFAULT_LOAD_SCALE.items()}
     )

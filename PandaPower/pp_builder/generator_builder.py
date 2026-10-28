@@ -984,7 +984,7 @@ def _create_mekh_element(
             return idx, "load"
 
         # Idle and discharging batteries are represented as sgen.
-        if battery_mode >= 0.0:
+        if battery_mode > 0.0:
             battery_state = "discharging"
         else:
             battery_state = "idle"

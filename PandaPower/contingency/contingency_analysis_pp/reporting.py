@@ -36,6 +36,15 @@ _BUS_COLUMNS = [
     "post_vm_pu", "delta_vm_pu",
 ]
 
+_GRID_HEADERS = {
+    "n": "N", "n_on": "N_on", "p_inst_mw": "P_inst [MW]",
+    "q_min_mvar": "Q_min [MVAr]", "q_max_mvar": "Q_max [MVAr]",
+    "s_inst_mva": "S_inst [MVA]", "p_op_mw": "P_op [MW]",
+    "q_op_mvar": "Q_op [MVAr]", "s_op_mva": "S_op [MVA]",
+    "p_charge_mw": "P_charge [MW]",
+    "p_discharge_mw": "P_discharge [MW]",
+}
+
 
 def _name(net, table: str, idx: Any) -> Any:
     if table in net and idx in net[table].index and "name" in net[table].columns:
@@ -99,6 +108,21 @@ def _parameter_frame(parameters: dict) -> pd.DataFrame:
     rows = _flatten_parameters(parameters)
     return _safe_frame(rows, ["parameter", "value", "type"])
 
+
+
+def _grid_frame(tables: dict[str, pd.DataFrame] | None) -> pd.DataFrame:
+    """Combine print_model_powers tables into one filterable Grid worksheet."""
+    frames: list[pd.DataFrame] = []
+    for table_name, table in (tables or {}).items():
+        flat = table.rename(columns=_GRID_HEADERS).reset_index()
+        flat.insert(0, "power_table", table_name)
+        frames.append(flat)
+    if not frames:
+        return pd.DataFrame(columns=["power_table"])
+    nonempty = [frame for frame in frames if not frame.empty]
+    source = nonempty if nonempty else frames
+    frame = pd.concat(source, ignore_index=True, sort=False)
+    return frame.map(_finite)
 
 def _result_rows(net, results: list[ContingencyResult]):
     cases: list[dict] = []
@@ -210,7 +234,8 @@ def _format_workbook(writer: pd.ExcelWriter, sheet_names: list[str]) -> None:
 def write_report(path, net, results: Iterable[ContingencyResult],
                  violations: Iterable[Violation], *,
                  metadata: dict | None = None,
-                 study_parameters: dict | None = None) -> Path:
+                 study_parameters: dict | None = None,
+                 grid_power_tables: dict[str, pd.DataFrame] | None = None) -> Path:
     """Write a robust, atomic, multi-sheet contingency workbook.
 
     The workbook always contains headers, even if no contingency converged or
@@ -245,6 +270,7 @@ def write_report(path, net, results: Iterable[ContingencyResult],
     branches_df = _safe_frame(branch_rows, _BRANCH_COLUMNS)
     buses_df = _safe_frame(bus_rows, _BUS_COLUMNS)
     parameter_df = _parameter_frame(study_parameters or {})
+    grid_df = _grid_frame(grid_power_tables)
 
     # Write to a temporary file in the destination directory, then atomically
     # replace the target. A failed export cannot leave a half-written workbook.
@@ -256,9 +282,10 @@ def write_report(path, net, results: Iterable[ContingencyResult],
         with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
             study_df.to_excel(writer, sheet_name="Study", index=False)
             parameter_df.to_excel(writer, sheet_name="Parameters", index=False)
+            grid_df.to_excel(writer, sheet_name="Grid", index=False)
             cases_df.to_excel(writer, sheet_name="Cases", index=False)
             violations_df.to_excel(writer, sheet_name="Violations", index=False)
-            written = ["Study", "Parameters", "Cases", "Violations"]
+            written = ["Study", "Parameters", "Grid", "Cases", "Violations"]
             written += _write_chunked(writer, branches_df, "Branch results")
             written += _write_chunked(writer, buses_df, "Bus results")
             _format_workbook(writer, written)

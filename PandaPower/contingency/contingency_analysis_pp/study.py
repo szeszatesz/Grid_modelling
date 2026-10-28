@@ -14,6 +14,7 @@ from .violations import check_violations
 from .capacity import find_max_capacity, _inject, _drop_sgens
 from .reporting import write_report
 from .topology import get_relevant_contingency_lines
+from model_power_summary import collect_model_power_tables
 
 class ContingencyStudy:
     """IPSA-style seasonal N-1 connection-capacity study for pandapower."""
@@ -182,6 +183,9 @@ class ContingencyStudy:
                         "contingency_count": len(self.outages),
                     },
                     study_parameters=self.parameters(),
+                    grid_power_tables=collect_model_power_tables(
+                        self.net, operational="setpoints"
+                    ),
                 )
                 study_results[season] = {
                     "max_capacity_mw": max_capacity,

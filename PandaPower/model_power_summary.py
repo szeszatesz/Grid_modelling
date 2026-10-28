@@ -252,6 +252,110 @@ def _save_tables_excel(tables, destination, *, json_file, operational, run_power
         temporary.unlink(missing_ok=True)
 
 
+
+def collect_model_power_tables(
+    net,
+    *,
+    operational: str = 'setpoints',
+    technology_columns: Sequence[str] = _TECH_COLUMNS,
+    source_columns: Sequence[str] = _SOURCE_COLUMNS,
+    installed_columns: Mapping[str, Mapping[str, str | Sequence[str]]] | None = None,
+    battery_technologies: Sequence[str] = _BATTERY_TECHNOLOGIES,
+    battery_power_tolerance_mw: float = 1e-9,
+) -> dict[str, pd.DataFrame]:
+    """Collect the same power-summary tables as :func:`print_model_powers`.
+
+    Unlike ``print_model_powers``, this function operates on an existing
+    pandapower network and performs no printing, JSON loading, power flow or
+    Excel export. It is intended for embedding the exact same summary data in
+    other reports. The supplied network is not modified.
+    """
+    if operational not in {'setpoints', 'results'}:
+        raise ValueError("operational must be 'setpoints' or 'results'")
+    if not np.isfinite(battery_power_tolerance_mw) or battery_power_tolerance_mw < 0:
+        raise ValueError('battery_power_tolerance_mw must be finite and nonnegative')
+    if isinstance(battery_technologies, str):
+        raise TypeError('battery_technologies must be a sequence of labels, not one string')
+    for element, fields in (installed_columns or {}).items():
+        if element not in {'load', 'sgen', 'gen'} or set(fields) - set(_RATING_COLUMNS):
+            raise ValueError(f'Invalid installed_columns entry for {element!r}')
+    aliases = {_key(label) for label in battery_technologies if _key(label)}
+    converged = bool(net.get('converged', False))
+    if operational == 'results' and not converged:
+        raise ValueError("No converged results. Run a power flow or use operational='setpoints'.")
+    bus_on = _in_service(net.get('bus', pd.DataFrame()))
+    frames, batteries = {}, []
+    for element in ('load', 'sgen', 'gen'):
+        df = net.get(element, pd.DataFrame())
+        data = pd.DataFrame(index=df.index)
+        is_battery = _battery_mask(df, technology_columns, aliases)
+        data['technology'] = _labels(df, technology_columns)
+        data.loc[is_battery & data['technology'].eq('<unknown>'), 'technology'] = _labels(df, ('type',))[is_battery]
+        data['source'] = _labels(df, source_columns)
+        data['element'] = element
+        on = _in_service(df)
+        if len(df) and 'bus' in df:
+            on &= df['bus'].map(bus_on).fillna(False).astype(bool)
+        data['on'] = on
+        overrides = (installed_columns or {}).get(element, {})
+        for metric, output in (('p', 'p_inst_mw'), ('q_min', 'q_min_mvar'),
+                               ('q_max', 'q_max_mvar'), ('s', 's_inst_mva')):
+            names = overrides.get(metric, _RATING_COLUMNS[metric])
+            data[output] = _number(df, (names,) if isinstance(names, str) else names)
+            if metric == 's':
+                data[output] = data[output].where(data[output] >= 0)
+        result = net.get(f'res_{element}', pd.DataFrame()).reindex(df.index)
+        if operational == 'results':
+            p_op = _number(result, ('p_mw',))
+            q_op = _number(result, ('q_mvar',))
+        else:
+            scale = _number(df, ('scaling',)) if 'scaling' in df else pd.Series(1., index=df.index)
+            p_op = _number(df, ('p_mw',)) * scale
+            if element == 'gen':
+                q_op = _number(result, ('q_mvar',)) if converged else pd.Series(np.nan, index=df.index)
+                slack = df['slack'].fillna(False).eq(True) if 'slack' in df else pd.Series(False, index=df.index)
+                slack_p = _number(result, ('p_mw',)) if converged else pd.Series(np.nan, index=df.index)
+                p_op = p_op.where(~slack, slack_p)
+            else:
+                q_op = _number(df, ('q_mvar',)) * scale
+        data['p_op_mw'] = p_op.where(on, 0.)
+        data['q_op_mvar'] = q_op.where(on, 0.)
+        frames[element] = data.loc[~is_battery].copy()
+        battery_part = data.loc[is_battery].copy()
+        if element == 'load':
+            battery_part[['p_op_mw', 'q_op_mvar']] *= -1
+            q_min, q_max = battery_part['q_min_mvar'].copy(), battery_part['q_max_mvar'].copy()
+            battery_part['q_min_mvar'], battery_part['q_max_mvar'] = -q_max, -q_min
+        batteries.append(battery_part)
+    battery = pd.concat(batteries, ignore_index=True)
+    battery['state'] = 'unknown'
+    battery.loc[battery['p_op_mw'].lt(-battery_power_tolerance_mw), 'state'] = 'charging'
+    battery.loc[battery['p_op_mw'].gt(battery_power_tolerance_mw), 'state'] = 'discharging'
+    battery.loc[battery['p_op_mw'].abs().le(battery_power_tolerance_mw), 'state'] = 'idle'
+    battery.loc[~battery['on'], 'state'] = 'out_of_service'
+    totals = [_aggregate(frames[element]) for element in ('load', 'sgen', 'gen')] + [_aggregate(battery)]
+    tables = {
+        'totals': pd.DataFrame(
+            totals, index=pd.Index(('load', 'sgen', 'gen', 'battery'), name='element')
+        )
+    }
+    for element in ('sgen', 'gen'):
+        for suffix, keys in (
+            ('technology', ['technology']),
+            ('source', ['source']),
+            ('technology_source', ['technology', 'source']),
+        ):
+            tables[f'{element}_by_{suffix}'] = _group(frames[element], keys)
+    for suffix, keys in (
+        ('technology', ['technology']),
+        ('source', ['source']),
+        ('technology_source', ['technology', 'source']),
+        ('state', ['state']),
+        ('element', ['element']),
+    ):
+        tables[f'battery_by_{suffix}'] = _group(battery, keys, battery=True)
+    return tables
+
 def print_model_powers(
     json_file: str | Path,
     output_dir: str | Path | None = None,

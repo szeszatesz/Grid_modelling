@@ -10,11 +10,12 @@ net.load["scaling"] = <seasonal_factor> globally, or use
 apply_load_scaling(net, factor) from this module.
 """
 from __future__ import annotations
+import math
 
 import pandas as pd
 import pandapower as pp
 
-from .config import SHEET_LOADS, DEFAULT_LOAD_SCALING
+from .config import SHEET_LOADS, DEFAULT_LOAD_SCALING, TECHNOLOGY_BATTERY
 from .excel_reader import _float, _bool, _str
 
 
@@ -82,63 +83,148 @@ def scale_loads_to_target(
     respect_existing_scaling: bool = True,
 ) -> float:
     """
-    Scale all loads uniformly so that total active load equals *target_mw*.
+    Scale non-battery loads uniformly to the requested active-power total.
 
-    The current total is computed as sum(p_mw * scaling) over the loads
-    considered (in-service only by default). A single multiplicative
-    factor is then applied on top of each load's existing `scaling`
-    value, preserving relative differences between loads while hitting
-    the requested system-wide capacity.
+    Battery loads are excluded from both:
+      - The total used to calculate the scaling factor.
+      - The rows whose scaling values are modified.
+
+    Therefore, target_mw represents ordinary demand EXCLUDING battery
+    charging. Battery operating points remain unchanged.
 
     Parameters
     ----------
     net : pp.pandapowerNet
-        Network whose net.load table will be modified in place.
+        Network modified in place.
     target_mw : float
-        Desired total active load capacity in MW (e.g. 6400).
+        Desired total non-battery active load in MW.
+        Must be finite and non-negative.
     in_service_only : bool
-        If True, only in-service loads contribute to the current total
-        and only in-service loads are rescaled.
+        If True, only in-service non-battery loads are considered
+        and modified.
     respect_existing_scaling : bool
-        If True, multiply the existing per-load `scaling` values by the
-        derived factor (preserves per-load ScalingFactor differences).
-        If False, overwrite `scaling` directly with the factor.
+        If True, multiply existing scaling values by a common factor.
+        If False, replace scaling values with a common factor derived
+        from the unscaled non-battery p_mw total.
 
     Returns
     -------
     float
-        The scale factor that was applied.
+        Applied scaling factor.
 
     Raises
     ------
     ValueError
-        If there are no loads, or the current total load is zero
-        (scaling factor would be undefined).
+        If the target is invalid, no eligible loads exist, or the
+        reference total is not finite and positive.
     """
-    mask = net.load["in_service"] if in_service_only else pd.Series(True, index=net.load.index)
+    target_mw = float(target_mw)
 
-    if not mask.any():
-        raise ValueError("[load_builder] No (in-service) loads found — cannot scale to target.")
-
-    current_total_mw = (net.load.loc[mask, "p_mw"] * net.load.loc[mask, "scaling"]).sum()
-
-    if current_total_mw <= 0:
+    if not math.isfinite(target_mw) or target_mw < 0.0:
         raise ValueError(
-            f"[load_builder] Current total load is {current_total_mw:.3f} MW — "
-            "cannot derive a finite scale factor."
+            "[load_builder] target_mw must be finite and non-negative."
         )
 
-    factor = target_mw / current_total_mw
+    loads = net.load
+
+    # Identify batteries by technology, with type as a fallback.
+    # Accept both scalar labels and single-item list labels.
+    battery_mask = pd.Series(False, index=loads.index)
+
+    for column in ("technology", "type"):
+        if column not in loads.columns:
+            continue
+
+        labels = loads[column].map(
+            lambda value: (
+                (value[0] if value else None)
+                if isinstance(value, list)
+                else value
+            )
+        )
+
+        battery_mask |= (
+            labels.eq(TECHNOLOGY_BATTERY).fillna(False)
+        )
+
+    # Only ordinary loads participate in target-load scaling.
+    mask = ~battery_mask
+
+    if in_service_only:
+        mask &= loads["in_service"].fillna(False).astype(bool)
+
+    if not mask.any():
+        raise ValueError(
+            "[load_builder] No eligible non-battery loads found "
+            "— cannot scale to target."
+        )
+
+    p_mw = loads.loc[mask, "p_mw"].astype(float)
+
+    if not p_mw.map(math.isfinite).all():
+        raise ValueError(
+            "[load_builder] Selected loads contain non-finite p_mw."
+        )
 
     if respect_existing_scaling:
-        net.load.loc[mask, "scaling"] = net.load.loc[mask, "scaling"] * factor
-    else:
-        net.load.loc[mask, "scaling"] = factor
+        reference_scaling = (
+            loads.loc[mask, "scaling"].astype(float)
+        )
 
-    new_total_mw = (net.load.loc[mask, "p_mw"] * net.load.loc[mask, "scaling"]).sum()
+        if (
+            not reference_scaling.map(math.isfinite).all()
+            or (reference_scaling < 0.0).any()
+        ):
+            raise ValueError(
+                "[load_builder] Selected loads must have finite, "
+                "non-negative scaling values."
+            )
+
+    else:
+        # Existing scaling is being overwritten, so derive the factor
+        # from the unscaled p_mw total, not p_mw * old_scaling.
+        reference_scaling = pd.Series(
+            1.0,
+            index=p_mw.index,
+        )
+
+    reference_total_mw = float(
+        (p_mw * reference_scaling).sum()
+    )
+
+    if (
+        not math.isfinite(reference_total_mw)
+        or reference_total_mw <= 0.0
+    ):
+        raise ValueError(
+            "[load_builder] Reference non-battery load total must "
+            f"be finite and positive; got {reference_total_mw!r} MW."
+        )
+
+    factor = target_mw / reference_total_mw
+    new_scaling = reference_scaling * factor
+
+    if (
+        not math.isfinite(factor)
+        or not new_scaling.map(math.isfinite).all()
+    ):
+        raise ValueError(
+            "[load_builder] Calculated scaling is not finite."
+        )
+
+    # Battery rows and other excluded rows remain completely untouched.
+    loads.loc[mask, "scaling"] = new_scaling
+
+    new_total_mw = float(
+        (p_mw * new_scaling).sum()
+    )
 
     print(
-        f"[load_builder] Scaled loads: {current_total_mw:.1f} MW → "
-        f"{new_total_mw:.1f} MW (target {target_mw:.1f} MW, factor={factor:.4f})"
+        "[load_builder] Scaled non-battery loads: "
+        f"reference={reference_total_mw:.1f} MW → "
+        f"{new_total_mw:.1f} MW "
+        f"(target={target_mw:.1f} MW, factor={factor:.4f}); "
+        f"excluded {int(battery_mask.sum())} battery load(s)."
     )
+
     return factor

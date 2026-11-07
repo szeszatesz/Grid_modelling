@@ -18,7 +18,7 @@ net = builder.load("PandaPower/models/model_20261019_194732.json")
 
 study = ContingencyStudy(
     net=net,
-    target_bus="ALBF B1     120.00",  # exact name, bus index, mapping or query
+    target_bus="CSEG GY1    120.00",  # exact name, bus index, mapping or query
     technologies=[
         {"name": "WIND_NEW", "technology": "wind", "P_MW": 50.0},
         {"name": "BATTERY_NEW", "technology": "battery", "P_MW": 20.0},
@@ -29,7 +29,18 @@ study = ContingencyStudy(
         voltage_change_limit_pu=0.02,
         min_voltage_pu=0.90,
         max_voltage_pu=1.10,
-        capacity_tolerance_mw=1.0,
+        voltage_limits_min_kv=36.0,
+        capacity_tolerance_mw=1.0,            
+        scale_existing_generators=True,
+        load_scales = {
+            "summer": {"P": 1.0, "Q": 1.0},
+            "winter": {"P": 1.0, "Q": 1.0},
+        },
+        generator_scales = {
+            "wind": {"summer": 0.4, "winter": 1.0},
+            "solar": {"summer": 0.4, "winter": 0.20},
+            "battery": {"summer": 0.0, "winter": 0.0},
+        },
         power_flow_options={
             "algorithm": "nr",
             "calculate_voltage_angles": False,

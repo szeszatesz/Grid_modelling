@@ -6,7 +6,7 @@ Dependencies: pandapower, pandas, numpy; openpyxl for Excel export.
     tables = print_model_powers('model.json', 'reports', run_powerflow=True)
 
 Totals are EXCLUSIVE: load, sgen, gen exclude identified batteries. The battery
-row combines identified batteries from all three tables, with generation signs:
+row combines identified batteries from load/sgen/gen plus native storage, with generation signs:
 positive P = discharging, negative P = charging; positive Q = injection.
 No network elements or original JSON file are modified by reporting.
 
@@ -36,7 +36,7 @@ Battery breakdowns include separate P_charge/P_discharge [MW] (nonnegative)
 so simultaneously charging/discharging devices do not disappear in net totals.
 Rows are counted once per JSON element; separate duplicate representations of
 the same physical battery cannot be deduplicated without a reliable asset ID.
-Dedicated net.storage, ext_grid and asymmetric elements remain out of scope.
+Native net.storage is included with batteries; ext_grid and asymmetric elements remain out of scope.
 
 Output: console plus optional <JSON stem>_power_summary.xlsx in output_dir,
 created as needed. Existing same-name workbooks are replaced. Every table,
@@ -277,7 +277,7 @@ def collect_model_power_tables(
     if isinstance(battery_technologies, str):
         raise TypeError('battery_technologies must be a sequence of labels, not one string')
     for element, fields in (installed_columns or {}).items():
-        if element not in {'load', 'sgen', 'gen'} or set(fields) - set(_RATING_COLUMNS):
+        if element not in {'load', 'sgen', 'gen', 'storage'} or set(fields) - set(_RATING_COLUMNS):
             raise ValueError(f'Invalid installed_columns entry for {element!r}')
     aliases = {_key(label) for label in battery_technologies if _key(label)}
     converged = bool(net.get('converged', False))
@@ -285,10 +285,11 @@ def collect_model_power_tables(
         raise ValueError("No converged results. Run a power flow or use operational='setpoints'.")
     bus_on = _in_service(net.get('bus', pd.DataFrame()))
     frames, batteries = {}, []
-    for element in ('load', 'sgen', 'gen'):
+    for element in ('load', 'sgen', 'gen', 'storage'):
         df = net.get(element, pd.DataFrame())
         data = pd.DataFrame(index=df.index)
-        is_battery = _battery_mask(df, technology_columns, aliases)
+        is_battery = (pd.Series(True, index=df.index, dtype=bool) if element == 'storage'
+                      else _battery_mask(df, technology_columns, aliases))
         data['technology'] = _labels(df, technology_columns)
         data.loc[is_battery & data['technology'].eq('<unknown>'), 'technology'] = _labels(df, ('type',))[is_battery]
         data['source'] = _labels(df, source_columns)
@@ -322,7 +323,7 @@ def collect_model_power_tables(
         data['q_op_mvar'] = q_op.where(on, 0.)
         frames[element] = data.loc[~is_battery].copy()
         battery_part = data.loc[is_battery].copy()
-        if element == 'load':
+        if element in {'load', 'storage'}:
             battery_part[['p_op_mw', 'q_op_mvar']] *= -1
             q_min, q_max = battery_part['q_min_mvar'].copy(), battery_part['q_max_mvar'].copy()
             battery_part['q_min_mvar'], battery_part['q_max_mvar'] = -q_max, -q_min
@@ -377,7 +378,7 @@ def print_model_powers(
     output_dir=None preserves print-only behavior. Otherwise create the output
     directory and save all tables as <JSON stem>_power_summary.xlsx (overwriting).
     installed_columns overrides are keyed by ORIGINAL element table, even for
-    batteries: load/sgen/gen -> p, q_min, q_max, s -> column or ordered columns.
+    batteries: load/sgen/gen/storage -> p, q_min, q_max, s -> column or ordered columns.
     battery_technologies replaces the exact tag aliases (technology or type).
     """
     if operational not in {'setpoints', 'results'}:
@@ -394,7 +395,7 @@ def print_model_powers(
     if excel_filename is not None and output_dir is None:
         raise ValueError('excel_filename requires output_dir')
     for element, fields in (installed_columns or {}).items():
-        if element not in {'load', 'sgen', 'gen'} or set(fields) - set(_RATING_COLUMNS):
+        if element not in {'load', 'sgen', 'gen', 'storage'} or set(fields) - set(_RATING_COLUMNS):
             raise ValueError(f'Invalid installed_columns entry for {element!r}')
     path = Path(json_file).expanduser()
     if not path.is_file():
@@ -413,10 +414,11 @@ def print_model_powers(
         notes.append('Setpoints are not a solved state; ZIP loads assume nominal voltage, and disconnected islands are not detected.')
     if converged and not run_powerflow:
         notes.append('Saved convergence does not prove result freshness; use run_powerflow=True to recalculate.')
-    for element in ('load', 'sgen', 'gen'):
+    for element in ('load', 'sgen', 'gen', 'storage'):
         df = net.get(element, pd.DataFrame())
         data = pd.DataFrame(index=df.index)
-        is_battery = _battery_mask(df, technology_columns, aliases)
+        is_battery = (pd.Series(True, index=df.index, dtype=bool) if element == 'storage'
+                      else _battery_mask(df, technology_columns, aliases))
         data['technology'] = _labels(df, technology_columns)
         data.loc[is_battery & data['technology'].eq('<unknown>'), 'technology'] = _labels(df, ('type',))[is_battery]
         data['source'] = _labels(df, source_columns)
@@ -454,7 +456,7 @@ def print_model_powers(
                 notes.append(f'{element}: {column} missing for {data[column].isna().sum()} in-service rows; affected sums are N/A.')
         frames[element] = data.loc[~is_battery].copy()
         bat = data.loc[is_battery].copy()
-        if element == 'load':
+        if element in {'load', 'storage'}:
             bat[['p_op_mw', 'q_op_mvar']] *= -1
             q_min, q_max = bat['q_min_mvar'].copy(), bat['q_max_mvar'].copy()
             bat['q_min_mvar'], bat['q_max_mvar'] = -q_max, -q_min

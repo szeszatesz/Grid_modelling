@@ -235,7 +235,8 @@ def write_report(path, net, results: Iterable[ContingencyResult],
                  violations: Iterable[Violation], *,
                  metadata: dict | None = None,
                  study_parameters: dict | None = None,
-                 grid_power_tables: dict[str, pd.DataFrame] | None = None) -> Path:
+                 grid_power_tables: dict[str, pd.DataFrame] | None = None,
+                 scaling_audit: pd.DataFrame | None = None) -> Path:
     """Write a robust, atomic, multi-sheet contingency workbook.
 
     The workbook always contains headers, even if no contingency converged or
@@ -288,6 +289,8 @@ def write_report(path, net, results: Iterable[ContingencyResult],
             written = ["Study", "Parameters", "Grid", "Cases", "Violations"]
             written += _write_chunked(writer, branches_df, "Branch results")
             written += _write_chunked(writer, buses_df, "Bus results")
+            if scaling_audit is not None:
+                written += _write_chunked(writer, scaling_audit, "Scaling audit")
             _format_workbook(writer, written)
         os.replace(temp_path, path)
     except Exception:

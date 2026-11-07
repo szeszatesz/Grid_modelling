@@ -5,6 +5,7 @@ import pandapower as pp
 from .models import Outage, ContingencyResult, ElementRef
 from .engine import run_contingencies
 from .violations import check_violations
+from .scaling import seasonal_factor
 
 
 def _inject(net, bus, technologies: list[dict], scale: float, season: str,
@@ -12,7 +13,7 @@ def _inject(net, bus, technologies: list[dict], scale: float, season: str,
     created = []
     for tech in technologies:
         technology = str(tech.get("technology", "wind"))
-        seasonal = generator_scales.get(technology, {}).get(season, 1.0)
+        seasonal = seasonal_factor(technology, season, generator_scales)
         p = float(tech["P_MW"]) * scale * seasonal
         q = float(tech.get("Q_MVAr", 0.0)) * scale * seasonal
         idx = pp.create_sgen(
@@ -23,6 +24,7 @@ def _inject(net, bus, technologies: list[dict], scale: float, season: str,
             in_service=True, type=technology,
         )
         net.sgen.at[idx, "technology"] = technology
+        net.sgen.at[idx, "installed_p_mw"] = abs(float(tech["P_MW"]) * scale)
         created.append(idx)
     return created
 

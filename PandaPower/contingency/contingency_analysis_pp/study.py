@@ -15,6 +15,7 @@ from .capacity import find_max_capacity, _inject, _drop_sgens
 from .reporting import write_report
 from .topology import get_relevant_contingency_lines
 from model_power_summary import collect_model_power_tables
+from .scaling import apply_generator_scaling, battery_mask, seasonal_factor, validate_factor, attach_actual_results
 
 class ContingencyStudy:
     """IPSA-style seasonal N-1 connection-capacity study for pandapower."""
@@ -54,58 +55,43 @@ class ContingencyStudy:
             "config": asdict(self.config),
         }
 
-    @staticmethod
-    def _technology_labels(value) -> set[str]:
-        if isinstance(value, (list, tuple, set)):
-            return {str(item).strip().lower() for item in value}
-        return {str(value).strip().lower()}
+    def _scaling_rules(self):
+        rules = deepcopy(self.config.generator_scales)
+        if self.config.default_generator_scale is not None:
+            factor = validate_factor(self.config.default_generator_scale)
+            rules["default"] = {season: factor for season in self.config.load_scales}
+        return rules
 
     def _generator_scale(self, value, season: str) -> float:
-        labels = self._technology_labels(value)
-        aliases = {
-            "solar": {"solar", "solarphotovo", "rooftoppv", "otherres"},
-            "wind": {"wind", "windonshore", "windoffshore"},
-            "battery": {"battery", "batterystrg"},
-        }
-        for configured, seasonal in self.config.generator_scales.items():
-            configured_labels = aliases.get(str(configured).strip().lower(), {
-                str(configured).strip().lower()
-            })
-            if labels & configured_labels:
-                return float(seasonal.get(season, 1.0))
-        return 1.0
+        return seasonal_factor(value, season, self._scaling_rules())
 
     def _set_existing_generator_scales(self, season: str) -> None:
-        if not self.config.scale_existing_generators:
-            return
-        for table_name in ("gen", "sgen"):
-            if table_name not in self.net:
-                continue
-            table = self.net[table_name]
-            source_column = (
-                "technology" if "technology" in table.columns else
-                "type" if "type" in table.columns else None
-            )
-            if source_column is None:
-                continue
-            if "scaling" not in table.columns:
-                table["scaling"] = 1.0
-            table.loc[:, "scaling"] = table[source_column].map(
-                lambda value: self._generator_scale(value, season)
+        self.scaling_audit = None
+        if self.config.scale_existing_generators:
+            self.scaling_audit = apply_generator_scaling(
+                self.net, season, self._scaling_rules(),
+                basis=self.config.generator_scaling_basis,
+                rating_columns=self.config.generator_rating_columns,
+                zero_battery_disconnect_gen=self.config.zero_battery_disconnect_gen,
             )
 
     def _set_season(self, season: str):
         if season not in self.config.load_scales:
             raise KeyError(f"No load scaling configured for season {season!r}")
+        if not hasattr(self, "_season_baseline"):
+            self._season_baseline = {
+                name: self.net[name].copy(deep=True)
+                for name in ("load", "line", "gen", "sgen", "storage") if name in self.net
+            }
+        for name, frame in self._season_baseline.items():
+            self.net[name] = frame.copy(deep=True)
         load = self.config.load_scales[season]
-        if "scaling" not in self.net.load.columns:
-            self.net.load["scaling"] = 1.0
-        self.net.load.loc[:, "scaling"] = (
-            self.net.load["scaling"].astype(float) * float(load["P"])
-        )
-        if float(load["P"]) != float(load["Q"]):
-            self.net.load.loc[:, "q_mvar"] *= float(load["Q"]) / float(load["P"])
+        p_factor, q_factor = validate_factor(load["P"]), validate_factor(load["Q"])
+        ordinary_loads = ~battery_mask(self.net.load, "load")
+        self.net.load.loc[ordinary_loads, "p_mw"] *= p_factor
+        self.net.load.loc[ordinary_loads, "q_mvar"] *= q_factor
         self._set_existing_generator_scales(season)
+        self.net["converged"] = False
         rating_column = f"max_i_ka_{season}"
         if rating_column in self.net.line.columns:
             self.net.line.loc[:, "max_i_ka"] = self.net.line[rating_column]
@@ -125,23 +111,18 @@ class ContingencyStudy:
     def run(self, seasons=("summer", "winter"), output_dir="results") -> dict:
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
-        original_load = self.net.load.copy(deep=True)
-        original_line = self.net.line.copy(deep=True)
-        original_gen = self.net.gen.copy(deep=True) if "gen" in self.net else None
-        original_sgen = self.net.sgen.copy(deep=True) if "sgen" in self.net else None
+        originals = {
+            name: self.net[name].copy(deep=True)
+            for name in ("load", "line", "gen", "sgen", "storage") if name in self.net
+        }
+        self._season_baseline = originals
         study_results = {}
         try:
             for season in seasons:
-                self.net.load = original_load.copy(deep=True)
-                self.net.line = original_line.copy(deep=True)
-                if original_gen is not None:
-                    self.net.gen = original_gen.copy(deep=True)
-                if original_sgen is not None:
-                    self.net.sgen = original_sgen.copy(deep=True)
                 self._set_season(season)
                 created = _inject(
                     self.net, self.target_bus, self.technologies, 1.0,
-                    season, self.config.generator_scales,
+                    season, self._scaling_rules(),
                 )
                 try:
                     results = run_contingencies(
@@ -156,7 +137,7 @@ class ContingencyStudy:
                     max_capacity, results = find_max_capacity(
                         self.net, self.target_bus, self.technologies, self.outages,
                         season=season,
-                        generator_scales=self.config.generator_scales,
+                        generator_scales=self._scaling_rules(),
                         power_flow_options=self.config.power_flow_options,
                         tolerance_mw=self.config.capacity_tolerance_mw,
                         max_loading_percent=self.config.max_loading_percent,
@@ -170,6 +151,18 @@ class ContingencyStudy:
                     violations = self._check(results)
                 else:
                     max_capacity = full_capacity
+                # Candidate sgens have been removed. Re-solve the scaled background
+                # so Grid and actual audit values cannot reuse candidate results.
+                background_error = None
+                try:
+                    pp.runpp(self.net, **self.config.power_flow_options)
+                    background_converged = bool(self.net.get("converged", False))
+                except Exception as exc:
+                    background_converged = False
+                    self.net["converged"] = False
+                    background_error = f"{type(exc).__name__}: {exc}"
+                self.scaling_audit = attach_actual_results(
+                    self.net, self.scaling_audit, converged=background_converged)
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 target_name = str(self.net.bus.at[self.target_bus, "name"]).strip().replace(" ", "_")
                 report = output / f"{stamp}_contingency_{target_name}_{season}.xlsx"
@@ -181,22 +174,25 @@ class ContingencyStudy:
                         "target_name": self.net.bus.at[self.target_bus, "name"],
                         "max_capacity_mw": max_capacity,
                         "contingency_count": len(self.outages),
+                        "grid_snapshot": "scaled background N-0; candidate excluded",
+                        "grid_operational_mode": "results" if background_converged else "setpoints",
+                        "grid_power_flow_converged": background_converged,
+                        "grid_power_flow_error": background_error,
                     },
                     study_parameters=self.parameters(),
+                    scaling_audit=self.scaling_audit,
                     grid_power_tables=collect_model_power_tables(
-                        self.net, operational="setpoints"
+                        self.net, operational="results" if background_converged else "setpoints"
                     ),
                 )
                 study_results[season] = {
                     "max_capacity_mw": max_capacity,
                     "results": results, "violations": violations, "report": report,
+                    "scaling_audit": self.scaling_audit,
                 }
         finally:
-            self.net.load = original_load
-            self.net.line = original_line
-            if original_gen is not None:
-                self.net.gen = original_gen
-            if original_sgen is not None:
-                self.net.sgen = original_sgen
+            for name, frame in originals.items():
+                self.net[name] = frame
+            del self._season_baseline
             pp.runpp(self.net, **self.config.power_flow_options)
         return study_results

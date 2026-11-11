@@ -933,8 +933,8 @@ def _create_mekh_element(
     # Battery
     # --------------------------------------------------------------
     if technology == TECHNOLOGY_BATTERY:
-        operating_power_mw = (
-            sn_mva * abs(battery_mode)
+        scaling = (
+            abs(battery_mode)
         )
 
         if battery_mode < 0.0:
@@ -944,10 +944,10 @@ def _create_mekh_element(
             idx = pp.create_load(
                 net,
                 bus=bus_idx,
-                p_mw=operating_power_mw,
+                p_mw=sn_mva,
                 q_mvar=0.0,
                 sn_mva=sn_mva,
-                scaling=1.0,
+                scaling=scaling,
                 name=name,
                 type=technology,
                 in_service=True,
@@ -979,7 +979,7 @@ def _create_mekh_element(
 
             net.load.at[
                 idx, "operating_power_mw"
-            ] = operating_power_mw
+            ] = battery_mode * sn_mva
 
             return idx, "load"
 
@@ -992,10 +992,10 @@ def _create_mekh_element(
         idx = pp.create_sgen(
             net,
             bus=bus_idx,
-            p_mw=operating_power_mw,
+            p_mw=sn_mva,
             q_mvar=0.0,
             sn_mva=sn_mva,
-            scaling=1.0,
+            scaling=scaling,
             name=name,
             type=technology,
             in_service=True,
@@ -1027,7 +1027,7 @@ def _create_mekh_element(
 
         net.sgen.at[
             idx, "operating_power_mw"
-        ] = operating_power_mw
+        ] = battery_mode * sn_mva
 
         return idx, "sgen"
 

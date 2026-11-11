@@ -40,16 +40,20 @@ class LoadFlowRunner:
         tolerance_mva: float = 1e-8,
     ) -> bool:
         """
-        Apply seasonal settings, scaling, then run the power flow.
+        Run power flow, preserving build-time generator scaling by default.
 
         Parameters
         ----------
         season : str
-            'summer' or 'winter'.
+            'summer' or 'winter'. Does not rescale generators by itself;
+            the build-time operating point is preserved.
         load_scale : float
-            Global load scaling factor (applied to ALL loads).
+            Retained for API compatibility; not applied here. Load scaling
+            remains in the existing model-build pathway.
         tech_gen_overrides : dict, optional
-            {technology: factor} — per-technology generator scaling override.
+            Explicit legacy override request. None preserves the built
+            scaling; a provided mapping calls apply_gen_scaling. Solar
+            portfolio defaults take precedence over technology overrides.
         algorithm : str
             pandapower solver: 'nr' (Newton-Raphson) or 'bfsw'.
         calculate_voltage_angles : bool
@@ -68,8 +72,11 @@ class LoadFlowRunner:
         # 2. Apply load scaling
         # deleted, as load scaling is applied in the build function, and not needed here
 
-        # 3. Apply generator scaling
-        apply_gen_scaling(self.net, season, tech_overrides=tech_gen_overrides)
+        # 3. Optional explicit generator scaling override
+        # Preserve the operating point assigned during model construction.
+        # Reapply factors only when the caller explicitly requests overrides.
+        if tech_gen_overrides is not None:
+            apply_gen_scaling(self.net, season, tech_overrides=tech_gen_overrides)
 
         self.last_season = season
 

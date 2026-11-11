@@ -8,6 +8,14 @@ Generator type mapping
 * PQ (constant P+Q injection): pp.create_sgen  → wind, solar, battery —
   converter-connected, no voltage control.
 
+Build-time solar scaling
+------------------------
+Five independent factors in config.SOLAR_SCALING_DEFAULTS are written to
+each solar element at creation: HMKE, MEKH_0_5_TO_5, MEKH_ABOVE_5, BTM_MV,
+and DISTRIBUTED_22KV. Installed p_mw/sn_mva are never multiplied in place.
+Exactly 5 MW is in the middle MEKH band; <=0.5 MW uses the legacy solar
+technology factor. Battery mode and wind scaling are not solar-scaled.
+
 Data sources
 ------------
 * Random small/medium distributed solar can be added with
@@ -222,6 +230,7 @@ from .config import (
     SHEET_GENERATORS,
     DEFAULT_GEN_SCALING,
     TECH_SCALING_DEFAULTS,
+    SOLAR_SCALING_DEFAULTS,
     RATING_SEASON_SUMMER,
     TECHNOLOGY_WIND, TECHNOLOGY_SOLAR, TECHNOLOGY_BATTERY, VOLTAGE_CONTROL_TECHS,
     _DISTRIBUTED_PV_DEFAULT_TOTAL_MW,
@@ -406,12 +415,100 @@ _HMKE_MAX_SEARCH_RADIUS_KM = 25.0
 _HMKE_DISTANCE_WEIGHT_EPSILON_KM = 0.5
 
 
+def _ensure_technology_columns(net) -> None:
+    """Allow tuple-valued technology constants on previously empty tables."""
+    for table in ("gen", "sgen", "load"):
+        if "technology" not in net[table].columns:
+            net[table]["technology"] = pd.Series(index=net[table].index, dtype=object)
+
+
+def _technology_key(value):
+    """Canonicalize tuple/list technology labels, including JSON round trips."""
+    if isinstance(value, (list, tuple)):
+        return tuple(_technology_key(item) for item in value)
+    return value.strip().upper() if isinstance(value, str) else value
+
+
+def _same_technology(value, configured) -> bool:
+    value, configured = _technology_key(value), _technology_key(configured)
+    if value is None or value is pd.NA:
+        return False
+    if isinstance(value, tuple):
+        return bool(value) and (
+            value == configured
+            or all(_same_technology(item, configured) for item in value)
+        )
+    if isinstance(configured, tuple):
+        return value in configured
+    return value == configured
+
+
+def _validated_scaling(value, label: str) -> float:
+    try:
+        factor = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a finite non-negative number.") from exc
+    if not np.isfinite(factor) or factor < 0.0:
+        raise ValueError(f"{label} must be a finite non-negative number.")
+    return factor
+
+
+def _technology_scaling(technology, season: str, overrides=None) -> float:
+    """Resolve both single labels and the tuple-keyed config technology groups."""
+    for mapping in (overrides or {}, TECH_SCALING_DEFAULTS):
+        for configured, value in mapping.items():
+            if _same_technology(technology, configured):
+                if isinstance(value, dict):
+                    value = value.get(season, DEFAULT_GEN_SCALING)
+                return _validated_scaling(value, f"{technology!r} scaling")
+    return _validated_scaling(DEFAULT_GEN_SCALING, "DEFAULT_GEN_SCALING")
+
+
+def _solar_scaling_group(technology, source, installed_capacity_mw=None) -> str | None:
+    if not _same_technology(technology, TECHNOLOGY_SOLAR):
+        return None
+    source = str(source).strip().upper()
+    if source in {"DISTRIBUTED_22KV", "DISCTRIBUTED_22KV"}:
+        return "DISTRIBUTED_22KV"
+    if source in {"HMKE", "BTM_MV"}:
+        return source
+    if source == "MEKH" and installed_capacity_mw is not None:
+        capacity = float(installed_capacity_mw)
+        if np.isfinite(capacity):
+            if capacity > 5.0:
+                return "MEKH_ABOVE_5"
+            if capacity > 0.5:
+                return "MEKH_0_5_TO_5"
+    return None
+
+
+def _generator_scaling(technology, season: str, source=None,
+                       installed_capacity_mw=None, tech_overrides=None,
+                       solar_overrides=None) -> float:
+    group = _solar_scaling_group(technology, source, installed_capacity_mw)
+    if group is not None:
+        if solar_overrides is not None and group in solar_overrides:
+            return _validated_scaling(solar_overrides[group], f"{group} scaling")
+        if group not in SOLAR_SCALING_DEFAULTS or season not in SOLAR_SCALING_DEFAULTS[group]:
+            raise ValueError(f"Missing SOLAR_SCALING_DEFAULTS[{group!r}][{season!r}].")
+        return _validated_scaling(SOLAR_SCALING_DEFAULTS[group][season], f"{group} scaling")
+    return _technology_scaling(technology, season, tech_overrides)
+
+
+def _tag_solar_scaling(net, table: str, idx: int, technology, source,
+                       installed_capacity_mw: float) -> None:
+    group = _solar_scaling_group(technology, source, installed_capacity_mw)
+    if group is not None:
+        net[table].at[idx, "solar_scaling_group"] = group
+        net[table].at[idx, "installed_capacity_mw"] = float(installed_capacity_mw)
+
+
 def _get_scale(row: pd.Series, technology: str, season: str) -> float:
     """Resolve scaling factor: Excel override → config default → 1.0."""
     explicit = row.get("ScalingFactor", None)
     if explicit is not None and not pd.isna(explicit):
         return float(explicit)
-    return TECH_SCALING_DEFAULTS.get(technology, {}).get(season, DEFAULT_GEN_SCALING)
+    return _technology_scaling(technology, season)
 
 
 def _parse_mva(value) -> float | None:
@@ -909,6 +1006,7 @@ def _create_mekh_element(
         "gen", "sgen", or "load".
     """
 
+    _ensure_technology_columns(net)
     sn_mva = float(sn_mva)
     battery_mode = float(battery_mode)
 
@@ -1034,13 +1132,7 @@ def _create_mekh_element(
     # --------------------------------------------------------------
     # Solar and wind
     # --------------------------------------------------------------
-    scaling = TECH_SCALING_DEFAULTS.get(
-        technology,
-        {},
-    ).get(
-        season,
-        DEFAULT_GEN_SCALING,
-    )
+    scaling = _generator_scaling(technology, season, "MEKH", sn_mva)
 
     if (
         sn_mva
@@ -1077,6 +1169,7 @@ def _create_mekh_element(
             idx, "source"
         ] = "MEKH"
 
+        _tag_solar_scaling(net, "gen", idx, technology, "MEKH", sn_mva)
         return idx, "gen"
 
     idx = pp.create_sgen(
@@ -1103,6 +1196,7 @@ def _create_mekh_element(
         idx, "source"
     ] = "MEKH"
 
+    _tag_solar_scaling(net, "sgen", idx, technology, "MEKH", sn_mva)
     return idx, "sgen"
 
 
@@ -1132,6 +1226,7 @@ def build_generators(
         gen_map: {generator_name → (table, index)}
         where table is "gen" or "sgen".
     """
+    _ensure_technology_columns(net)
     df = sheets[SHEET_GENERATORS]
     gen_map: dict[str, tuple[str, int]] = {}
     skipped: list[str] = []
@@ -1534,6 +1629,7 @@ def build_hmke_generators(
     dict[str, int]
         gen_map: {generator_name → ("sgen", index)}
     """
+    _ensure_technology_columns(net)
     if isinstance(hmke_source, str):
         hmke_df = _load_hmke_sheet(hmke_source, sheet_name=sheet_name)
     else:
@@ -1560,7 +1656,7 @@ def build_hmke_generators(
 
     def _create_hmke_sgen(bus_idx: int, bus_name: str, municipality: str, p_mw: float, row_idx, suffix: str = "") -> None:
         name = f"HMKE_{_HMKE_TECHNOLOGY}_{bus_name}_{municipality}{suffix}_{row_idx}"
-        scaling = TECH_SCALING_DEFAULTS.get(_HMKE_TECHNOLOGY, {}).get(season, DEFAULT_GEN_SCALING)
+        scaling = _generator_scaling(_HMKE_TECHNOLOGY, season, "HMKE", p_mw)
         idx = pp.create_sgen(
             net,
             bus=bus_idx,
@@ -1575,6 +1671,7 @@ def build_hmke_generators(
         net.sgen.at[idx, "technology"] = _HMKE_TECHNOLOGY
         net.sgen.at[idx, "source"] = "HMKE"
         net.sgen.at[idx, "municipality"] = municipality
+        _tag_solar_scaling(net, "sgen", idx, _HMKE_TECHNOLOGY, "HMKE", p_mw)
         gen_map[name] = ("sgen", idx)
 
     for i, row in hmke_df.iterrows():
@@ -1682,7 +1779,7 @@ def build_distributed_solar_22kv(
     All projects are non-voltage-controlling pp.create_sgen elements with:
 
         q_mvar = 0.0
-        scaling = 1.0
+        scaling = SOLAR_SCALING_DEFAULTS["DISTRIBUTED_22KV"][season]
         in_service = True
 
     Parameters
@@ -1697,8 +1794,8 @@ def build_distributed_solar_22kv(
         Required total installed distributed-solar capacity in MW.
 
     season : str
-        Retained for compatibility and reporting. Distributed projects
-        are created with scaling=1.0.
+        Selects the independent DISTRIBUTED_22KV production factor in
+        SOLAR_SCALING_DEFAULTS; installed capacity remains unchanged.
 
     min_project_kw : float, default 50.0
         Minimum individual project capacity in kW.
@@ -1725,7 +1822,9 @@ def build_distributed_solar_22kv(
         If the exact requested total cannot be created.
     """
 
+    _ensure_technology_columns(net)
     source_tag = "DISTRIBUTED_22KV"
+    project_scaling = _generator_scaling(TECHNOLOGY_SOLAR, season, source_tag)
     target_voltage_kv = 22.0
     voltage_tolerance_kv = 1e-6
     capacity_tolerance_mw = 1e-9
@@ -2143,7 +2242,7 @@ def build_distributed_solar_22kv(
             p_mw=float(capacity_mw),
             q_mvar=0.0,
             sn_mva=float(capacity_mw),
-            scaling=1.0,
+            scaling=project_scaling,
             name=project_name,
             type=TECHNOLOGY_SOLAR,
             in_service=True,
@@ -2178,6 +2277,7 @@ def build_distributed_solar_22kv(
             sgen_idx,
         )
 
+        _tag_solar_scaling(net, "sgen", sgen_idx, TECHNOLOGY_SOLAR, source_tag, float(capacity_mw))
         created_indices.append(sgen_idx)
 
     # --------------------------------------------------------------
@@ -2260,7 +2360,8 @@ def build_distributed_solar_22kv(
         f"minimum={minimum_projects_per_bus}, "
         f"maximum={maximum_projects_per_bus}, "
         f"random_seed={random_seed}, "
-        f"season={season}, scaling=1.0."
+        f"season={season}, scaling={project_scaling:.6f}, "
+        f"scheduled production={created_total_mw * project_scaling:.6f} MW."
     )
 
     gen_map = generator_map
@@ -2279,6 +2380,8 @@ def build_behind_meter_mv_generators(
     min_voltage_kv: float = 1.0,
     max_voltage_kv: float = 35.0,
     random_seed: int | None = None,
+    *,
+    season: str = RATING_SEASON_SUMMER,
 ) -> dict[str, tuple[str, int]]:
     """
     Create behind-the-meter solar projects on MV busbars.
@@ -2292,7 +2395,8 @@ def build_behind_meter_mv_generators(
     - Individual capacity limits: above 0 and at most 2 MW.
     - Multiple projects may be connected to one busbar.
     - All projects are non-voltage-controlling sgen elements.
-    - scaling is fixed at 1.0.
+    - scaling comes from SOLAR_SCALING_DEFAULTS["BTM_MV"][season].
+    - Requested total is installed capacity, not post-scaling production.
 
     Placement rule
     --------------
@@ -2310,6 +2414,11 @@ def build_behind_meter_mv_generators(
     behind-the-meter capacity, while the same approximate penetration
     ratio is maintained across all eligible buses.
 
+    Both nameplate and scheduled BTM output must fit below demand.
+    Battery charging loads are excluded from demand. The check uses the
+    load scaling at the time this builder is called; rebuild/revalidate if
+    demand is changed afterwards.
+
     Existing in-service sgen elements tagged source="BTM_MV" are deducted
     from the consumption headroom. This also prevents a repeated call from
     assigning more behind-the-meter generation than the load can absorb.
@@ -2324,7 +2433,10 @@ def build_behind_meter_mv_generators(
         project_name -> ("sgen", sgen_index)
     """
 
+    _ensure_technology_columns(net)
     source_tag = "BTM_MV"
+    project_scaling = _generator_scaling(TECHNOLOGY_SOLAR, season, source_tag)
+    planning_scale = max(1.0, project_scaling)
     capacity_tolerance_mw = 1e-9
     consumption_margin_mw = 1e-6
     minimum_positive_project_mw = 1e-9
@@ -2445,6 +2557,9 @@ def build_behind_meter_mv_generators(
         )
 
     for load_idx, load in net.load.iterrows():
+        # Storage charging is not ordinary behind-the-meter consumption.
+        if _same_technology(load.get("technology"), TECHNOLOGY_BATTERY):
+            continue
         try:
             bus_idx = int(load["bus"])
             p_mw = float(load["p_mw"])
@@ -2555,7 +2670,8 @@ def build_behind_meter_mv_generators(
             if not np.isfinite(scaling):
                 continue
 
-            effective_generation_mw = p_mw * scaling
+            # Reserve nameplate even when dispatch is reduced or zero.
+            effective_generation_mw = p_mw * max(1.0, scaling)
 
             if effective_generation_mw <= 0.0:
                 continue
@@ -2628,7 +2744,7 @@ def build_behind_meter_mv_generators(
             consumption_mw
             - existing_btm_mw
             - consumption_margin_mw
-        )
+        ) / planning_scale
 
         if headroom_mw <= 0.0:
             continue
@@ -3246,7 +3362,7 @@ def build_behind_meter_mv_generators(
                 sn_mva=float(
                     project_capacity_mw
                 ),
-                scaling=1.0,
+                scaling=project_scaling,
                 name=project_name,
                 type=TECHNOLOGY_SOLAR,
                 in_service=True,
@@ -3297,6 +3413,7 @@ def build_behind_meter_mv_generators(
                 sgen_idx,
             )
 
+            _tag_solar_scaling(net, "sgen", sgen_idx, TECHNOLOGY_SOLAR, source_tag, float(project_capacity_mw))
             created_indices.append(
                 sgen_idx
             )
@@ -3351,7 +3468,7 @@ def build_behind_meter_mv_generators(
 
         total_btm_mw = (
             existing_btm_mw
-            + new_generation_mw
+            + new_generation_mw * planning_scale
         )
 
         if total_btm_mw >= consumption_mw:
@@ -3411,7 +3528,9 @@ def build_behind_meter_mv_generators(
         f"{total_headroom_mw:.6f} MW; "
         f"portfolio penetration ratio="
         f"{penetration_ratio:.6f}; "
-        f"random_seed={random_seed}."
+        f"random_seed={random_seed}, season={season}, "
+        f"scaling={project_scaling:.6f}, "
+        f"scheduled production={created_total_mw * project_scaling:.6f} MW."
     )
 
     gen_map = generator_map
@@ -3423,32 +3542,45 @@ def apply_gen_scaling(
     net: pp.pandapowerNet,
     season: str,
     tech_overrides: dict[str, float] | None = None,
+    *,
+    solar_overrides: dict[str, float] | None = None,
 ) -> None:
+    """Compatibility helper: reassign absolute factors, never compound them.
+
+    Normal model construction already applies factors at creation time.
+    This existing API remains available to callers, but is NOT invoked by
+    the load-flow runner automatically. Solar portfolio factors take
+    precedence over technology-wide overrides. Battery dispatch and charging
+    loads are untouched. No contingency-stage integration is added here.
     """
-    Update the `scaling` column in net.gen and net.sgen for all generators
-    based on per-technology factors for the given season.
+    if solar_overrides:
+        unknown = set(solar_overrides) - set(SOLAR_SCALING_DEFAULTS)
+        if unknown:
+            raise ValueError(f"Unknown solar scaling groups: {sorted(unknown)}")
+        for group, value in solar_overrides.items():
+            _validated_scaling(value, f"{group} scaling")
 
-    Parameters
-    ----------
-    season : str
-        RATING_SEASON_SUMMER or RATING_SEASON_WINTER.
-    tech_overrides : dict, optional
-        {technology_label: scale_factor} — overrides config defaults
-        for specific technologies in this call only.
-    """
-    overrides = tech_overrides or {}
-
-    def _scale(technology) -> float:
-        if isinstance(technology, list):
-            technology = technology[0] if technology else None
-        if technology in overrides:
-            return overrides[technology]
-        return TECH_SCALING_DEFAULTS.get(technology, {}).get(season, DEFAULT_GEN_SCALING)
-
-    if "technology" in net.gen.columns:
-        net.gen["scaling"] = net.gen["technology"].apply(_scale)
-
-    if "technology" in net.sgen.columns:
-        net.sgen["scaling"] = net.sgen["technology"].apply(_scale)
-
-    print(f"[generator_builder]  Generator scaling updated for season={season}.")
+    updates = []
+    for table_name in ("gen", "sgen"):
+        table = net[table_name]
+        if "technology" not in table.columns:
+            continue
+        for idx, row in table.iterrows():
+            technology = row["technology"]
+            if _same_technology(technology, TECHNOLOGY_BATTERY):
+                continue
+            if technology is None or (isinstance(technology, float) and np.isnan(technology)):
+                continue
+            capacity = row.get("installed_capacity_mw", np.nan)
+            if not np.isfinite(float(capacity)):
+                capacity = row.get("p_mw", np.nan)
+            factor = _generator_scaling(
+                technology, season, row.get("source"), capacity,
+                tech_overrides, solar_overrides,
+            )
+            updates.append((table_name, idx, factor, technology, row.get("source"), capacity))
+    # Validate every proposed factor before changing any table.
+    for table_name, idx, factor, technology, source, capacity in updates:
+        net[table_name].at[idx, "scaling"] = factor
+        _tag_solar_scaling(net, table_name, idx, technology, source, capacity)
+    print(f"[generator_builder] Generator scaling updated for season={season}.")

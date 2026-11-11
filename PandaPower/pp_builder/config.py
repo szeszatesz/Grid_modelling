@@ -45,6 +45,32 @@ TECH_SCALING_DEFAULTS: dict[str, dict[str, float]] = {
     TECHNOLOGY_GAS:     {RATING_SEASON_SUMMER: 1.00, RATING_SEASON_WINTER: 1.00},
 }
 
+# Independent SOLAR production factors, applied when each element is built.
+# These REPLACE the technology-wide solar factor; they are not multipliers
+# of TECH_SCALING_DEFAULTS[TECHNOLOGY_SOLAR]. Edit each portfolio separately.
+# Defaults preserve the previous build behavior: HMKE/MEKH = 0.30,
+# BTM/distributed = 1.00. These are configuration defaults, not forecasts.
+# MEKH capacity bands refer to UNscaled project p_mw (the current model
+# assumes MW == MEKH MVA at unity power factor). Exactly 5 MW is included
+# in MEKH_0_5_TO_5. Projects <= 0.5 MW keep the legacy technology factor.
+SOLAR_SCALING_DEFAULTS: dict[str, dict[str, float]] = {
+    "HMKE": {
+        RATING_SEASON_SUMMER: 1.0, RATING_SEASON_WINTER: 0.20,
+    },
+    "MEKH_0_5_TO_5": {
+        RATING_SEASON_SUMMER: 1.0, RATING_SEASON_WINTER: 0.30,
+    },
+    "MEKH_ABOVE_5": {
+        RATING_SEASON_SUMMER: 0.8, RATING_SEASON_WINTER: 0.30,
+    },
+    "BTM_MV": {
+        RATING_SEASON_SUMMER: 1.00, RATING_SEASON_WINTER: 0.3,
+    },
+    "DISTRIBUTED_22KV": {
+        RATING_SEASON_SUMMER: 1.00, RATING_SEASON_WINTER: 0.3,
+    },
+}
+
 # ── Excel sheet names ─────────────────────────────────────────────────────────
 SHEET_BUSBARS      = "Busz"
 SHEET_BRANCHES     = "Vezeték"

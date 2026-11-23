@@ -26,7 +26,7 @@ class StudyConfig:
     default_generator_scale: float | None = None
     generator_scaling_basis: str = "installed"  # or "setpoint" MW basis
     generator_rating_columns: tuple[str, ...] = (
-        "installed_p_mw", "p_installed_mw", "rated_power_mw", "rated_p_mw",
+        "installed_capacity_mw", "installed_p_mw", "p_installed_mw", "rated_power_mw", "rated_p_mw",
         "p_rated_mw", "p_nom_mw", "pn_mw", "max_p_mw",
     )
     zero_battery_disconnect_gen: bool = True

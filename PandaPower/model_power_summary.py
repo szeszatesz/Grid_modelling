@@ -70,7 +70,7 @@ _TECH_COLUMNS = ('technology', 'Technológia', 'tech')
 _SOURCE_COLUMNS = ('source_file', 'source_filename', 'source_path', 'filename', 'Source', 'source')
 _BATTERY_TECHNOLOGIES = ('BATTERYSTRG', 'BATTERY', 'BATTERY_STORAGE', 'BESS', 'AKKUMULÁTOR', 'AKKUMULÁTOROS ENERGIATÁROLÓ')
 _RATING_COLUMNS = {
-    'p': ('installed_p_mw', 'p_installed_mw', 'rated_power_mw', 'rated_p_mw', 'p_rated_mw', 'p_nom_mw', 'pn_mw', 'max_p_mw'),
+    'p': ('installed_capacity_mw', 'installed_p_mw', 'p_installed_mw', 'rated_power_mw', 'rated_p_mw', 'p_rated_mw', 'p_nom_mw', 'pn_mw', 'max_p_mw'),
     'q_min': ('installed_min_q_mvar', 'min_q_mvar'),
     'q_max': ('installed_max_q_mvar', 'installed_q_mvar', 'q_installed_mvar', 'max_q_mvar'),
     's': ('installed_s_mva', 's_installed_mva', 'sn_mva'),
@@ -391,7 +391,7 @@ def _collect_model_power_tables(
     if isinstance(battery_technologies, str):
         raise TypeError('battery_technologies must be a sequence of labels, not one string')
     for element, fields in (installed_columns or {}).items():
-        if element not in {'load', 'sgen', 'gen'} or set(fields) - set(_RATING_COLUMNS):
+        if element not in {'load', 'sgen', 'gen', 'storage'} or set(fields) - set(_RATING_COLUMNS):
             raise ValueError(f'Invalid installed_columns entry for {element!r}')
     aliases = {_key(label) for label in battery_technologies if _key(label)}
     converged = bool(net.get('converged', False))
@@ -399,10 +399,11 @@ def _collect_model_power_tables(
         raise ValueError("No converged results. Run a power flow or use operational='setpoints'.")
     bus_on = _in_service(net.get('bus', pd.DataFrame()))
     frames, batteries, notes = {}, [], []
-    for element in ('load', 'sgen', 'gen'):
+    for element in ('load', 'sgen', 'gen', 'storage'):
         df = net.get(element, pd.DataFrame())
         data = pd.DataFrame(index=df.index)
-        is_battery = _battery_mask(df, technology_columns, aliases)
+        is_battery = (pd.Series(True, index=df.index, dtype=bool) if element == 'storage'
+                      else _battery_mask(df, technology_columns, aliases))
         data['technology'] = _labels(df, technology_columns)
         data.loc[is_battery & data['technology'].eq('<unknown>'), 'technology'] = _labels(df, ('type',))[is_battery]
         data['source'] = _labels(df, source_columns)
@@ -458,7 +459,7 @@ def _collect_model_power_tables(
         data['s_op_mva'] = np.hypot(data['p_op_mw'], data['q_op_mvar'])
         frames[element] = data.loc[~is_battery].copy()
         battery_part = data.loc[is_battery].copy()
-        if element == 'load':
+        if element in {'load', 'storage'}:
             battery_part[['p_op_mw', 'q_op_mvar']] *= -1
             q_min, q_max = battery_part['q_min_mvar'].copy(), battery_part['q_max_mvar'].copy()
             battery_part['q_min_mvar'], battery_part['q_max_mvar'] = -q_max, -q_min
@@ -565,7 +566,7 @@ def print_model_powers(
     if excel_filename is not None and output_dir is None:
         raise ValueError('excel_filename requires output_dir')
     for element, fields in (installed_columns or {}).items():
-        if element not in {'load', 'sgen', 'gen'} or set(fields) - set(_RATING_COLUMNS):
+        if element not in {'load', 'sgen', 'gen', 'storage'} or set(fields) - set(_RATING_COLUMNS):
             raise ValueError(f'Invalid installed_columns entry for {element!r}')
     path = Path(json_file).expanduser()
     if not path.is_file():

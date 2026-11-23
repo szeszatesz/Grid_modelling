@@ -117,6 +117,7 @@ class ContingencyStudy:
         }
         self._season_baseline = originals
         study_results = {}
+        primary_error = None
         try:
             for season in seasons:
                 self._set_season(season)
@@ -190,9 +191,33 @@ class ContingencyStudy:
                     "results": results, "violations": violations, "report": report,
                     "scaling_audit": self.scaling_audit,
                 }
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
             for name, frame in originals.items():
                 self.net[name] = frame
             del self._season_baseline
-            pp.runpp(self.net, **self.config.power_flow_options)
+            self.net["converged"] = False
+            if primary_error is not None:
+                # Result tables belong to an intermediate state. Do not run an
+                # unscaled-network load flow while unwinding the original error.
+                for name in list(self.net):
+                    if name.startswith("res_") and hasattr(self.net[name], "iloc"):
+                        self.net[name] = self.net[name].iloc[0:0].copy()
+            else:
+                try:
+                    pp.runpp(self.net, **self.config.power_flow_options)
+                except Exception as exc:
+                    import warnings
+                    self.net["converged"] = False
+                    for name in list(self.net):
+                        if name.startswith("res_") and hasattr(self.net[name], "iloc"):
+                            self.net[name] = self.net[name].iloc[0:0].copy()
+                    self.restoration_error = f"{type(exc).__name__}: {exc}"
+                    warnings.warn(
+                        "Study completed and original input tables were restored, "
+                        "but their power flow failed: " + self.restoration_error,
+                        RuntimeWarning, stacklevel=2,
+                    )
         return study_results

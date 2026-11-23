@@ -4,7 +4,12 @@ from typing import Any
 
 DEFAULT_GEN_SCALE = {
     "wind": {"summer": 1.0, "winter": 1.0},
-    "solar": {"summer": 0.5, "winter": 0.20},
+    "solar": {"summer": 0.5, "winter": 0.20},      # only for solar rows without a portfolio
+    "HMKE": {"summer": 0.1, "winter": 0.20},
+    "MEKH_0_5_TO_5": {"summer": 0.2, "winter": 0.30},
+    "MEKH_ABOVE_5": {"summer": 0.3, "winter": 0.30},
+    "BTM_MV": {"summer": 0.4, "winter": 0.3},
+    "DISTRIBUTED_22KV": {"summer": 0.5, "winter": 0.3},
     "battery": {"summer": 0.0, "winter": 0.0},
 }
 DEFAULT_LOAD_SCALE = {

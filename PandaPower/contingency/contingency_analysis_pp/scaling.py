@@ -1,10 +1,16 @@
 """Seasonal dispatch for balanced gen/sgen/load/storage elements.
 
-Fixed-setpoint generators (conventional plants, biogas, hydro and standalone
-OTHERRES, all MAVIR-provided) are NEVER scaled, in any basis. Batteries follow
-explicit battery rules. Missing installed MW is never guessed from sn_mva;
-solar/wind rows without an MW rating use their unscaled p_mw as the dispatch
-reference (audited fallback).
+Basis semantics (non-fixed, non-battery gen/sgen):
+  installed : p_mw := explicit installed MW, scaling := study factor
+              -> P = installed * factor (any model factor is OVERRIDDEN).
+              Rows without installed MW keep p_mw (audited fallback).
+  setpoint  : scaling := model scaling * study factor, p_mw unchanged
+              -> P = p_mw * model_factor * study_factor (CHAINED).
+  builder   : pp_builder selects absolute factors, p_mw unchanged.
+Fixed-setpoint generators (conventional, biogas, hydro, standalone OTHERRES)
+are never touched. Batteries follow explicit rules. sn_mva is never MW.
+Solar rules may be keyed by builder portfolio (HMKE, MEKH_0_5_TO_5,
+MEKH_ABOVE_5, BTM_MV, DISTRIBUTED_22KV); a portfolio rule beats generic ones.
 """
 from __future__ import annotations
 
@@ -22,6 +28,15 @@ RATING_COLUMNS = ('installed_capacity_mw', 'installed_p_mw', 'p_installed_mw',
                   'rated_power_mw', 'rated_p_mw', 'p_rated_mw', 'p_nom_mw',
                   'pn_mw', 'max_p_mw')
 TECH_COLUMNS = ('technology', 'Technológia', 'tech', 'type')
+SOLAR_PORTFOLIOS = ('HMKE', 'MEKH_0_5_TO_5', 'MEKH_ABOVE_5', 'BTM_MV', 'DISTRIBUTED_22KV')
+# Same values as pp_builder.config.SOLAR_SCALING_DEFAULTS (summer, winter).
+DEFAULT_SOLAR_PORTFOLIO_SCALES = {
+    'HMKE': {'summer': 0.1, 'winter': 0.20},
+    'MEKH_0_5_TO_5': {'summer': 0.2, 'winter': 0.30},
+    'MEKH_ABOVE_5': {'summer': 0.3, 'winter': 0.30},
+    'BTM_MV': {'summer': 0.4, 'winter': 0.3},
+    'DISTRIBUTED_22KV': {'summer': 0.5, 'winter': 0.3},
+}
 ALIASES = {
     'solar': {'solar', 'solarphotovo', 'rooftoppv', 'otherres', 'pv'},
     'wind': {'wind', 'windonshore', 'windoffshore'},
@@ -29,21 +44,18 @@ ALIASES = {
                 'akkumulator', 'akkumulatorosenergiatarolo'},
     'hydro': {'hydro', 'hydroranpond', 'hydroreserv'},
 }
-# Fixed-setpoint technologies (MAVIR-provided dispatch, never scaled).
 FIXED_SETPOINT_TECHNOLOGIES = frozenset({
     'nuclear', 'hardcoalbf', 'hardcoalold1', 'lightoil', 'othernonres',
     'gasccgtnew', 'gasccgtold2', 'gasccgtpres1', 'gasccgtpres2',
     'gasconvold1', 'gasocgtnew', 'gasbio', 'hydroranpond', 'hydroreserv',
     'otherres'})
-# Solar rows carry the tuple label (SOLARPHOTOVO, ROOFTOPPV, OTHERRES); these
-# markers keep them scalable although 'otherres' alone is fixed.
 SCALABLE_MARKERS = frozenset({'solarphotovo', 'rooftoppv', 'solar', 'pv',
                               'windonshore', 'windoffshore', 'wind'})
 AUDIT_COLUMNS = ['season', 'element_type', 'element_index', 'element_name',
-    'technology', 'is_battery', 'is_fixed_setpoint', 'rule', 'requested_factor',
-    'basis', 'p_input_before_mw', 'scaling_before', 'p_set_before_mw',
-    'p_installed_mw', 'rating_column', 'p_input_after_mw', 'scaling_after',
-    'p_set_after_mw', 'expected_p_set_after_mw', 'p_error_mw',
+    'technology', 'solar_scaling_group', 'is_battery', 'is_fixed_setpoint',
+    'rule', 'requested_factor', 'basis', 'p_input_before_mw', 'scaling_before',
+    'p_set_before_mw', 'p_installed_mw', 'rating_column', 'p_input_after_mw',
+    'scaling_after', 'p_set_after_mw', 'expected_p_set_after_mw', 'p_error_mw',
     'setpoint_ratio_after_before', 'utilization_installed', 'in_service_before',
     'in_service_after', 'bus_in_service', 'slack', 'slack_weight', 'status',
     'effective_basis', 'reference_p_mw', 'reference_source', 'rating_source',
@@ -81,7 +93,6 @@ def is_battery(row, element_type=''):
 
 
 def is_fixed_setpoint(row, element_type='', fixed=FIXED_SETPOINT_TECHNOLOGIES):
-    """True for non-battery gen/sgen in the fixed set and not solar/wind-tagged."""
     if element_type not in ('gen', 'sgen') or is_battery(row, element_type):
         return False
     fixed = {key(f) for f in fixed}
@@ -111,18 +122,35 @@ def _factor_for_season(value, season):
     return validate_factor(value)
 
 
-def resolve_rule(value, season, rules, *, battery=False):
+def solar_group(row):
+    group = row.get('solar_scaling_group')
+    if isinstance(group, str) and group.strip():
+        for g in SOLAR_PORTFOLIOS:
+            if key(g) == key(group):
+                return g
+    return None
+
+
+def resolve_rule(value, season, rules, *, battery=False, group=None):
+    """Portfolio rule > exact label > family alias > default/all."""
+    if group is not None and not battery:
+        for name, setting in rules.items():
+            if key(name) == key(group):
+                factor = _factor_for_season(setting, season)
+                if factor is not None:
+                    return str(name), factor
     values = tokens(value)
     battery = battery or bool(values & ALIASES['battery'])
     if battery:
         values = ALIASES['battery']
-    normalized = [(str(name), tokens(name), setting) for name, setting in rules.items()]
+    normalized = [(str(name), tokens(name), setting) for name, setting in rules.items()
+                  if key(name) not in {key(g) for g in SOLAR_PORTFOLIOS}]
     for alias_pass in (False, True):
         for name, names, setting in normalized:
             if names & {'default', 'all'}:
                 continue
-            group = set().union(*(ALIASES.get(n, {n}) for n in names)) if alias_pass else names
-            if values & group and (not battery or group & ALIASES['battery']):
+            grp = set().union(*(ALIASES.get(n, {n}) for n in names)) if alias_pass else names
+            if values & grp and (not battery or grp & ALIASES['battery']):
                 factor = _factor_for_season(setting, season)
                 if factor is not None:
                     return name, factor
@@ -225,13 +253,10 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
                             missing_rating_policy='setpoint',
                             default_generator_scale=None,
                             fixed_setpoint_technologies=FIXED_SETPOINT_TECHNOLOGIES):
-    """Replace factors absolutely; validate all proposals before writing.
+    """Validate every proposal first, then write. See module docstring.
 
-    Fixed-setpoint gen/sgen rows are never touched in any basis, whatever the
-    rules or default say; status='fixed_setpoint_preserved'.
-    installed: explicit MW if present, else unscaled p_mw (audited fallback).
-    setpoint: unscaled p_mw. builder: pp_builder selects solar/wind factors.
-    Batteries follow explicit rules. Caller restores tables between seasons.
+    setpoint is CHAINED (model scaling x study factor), so call it once per
+    restored baseline; the study restores tables between seasons.
     """
     if basis not in {'installed', 'setpoint', 'builder'}:
         raise ValueError("generator_scaling_basis must be 'installed', 'setpoint' or 'builder'")
@@ -253,8 +278,9 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
                 continue
             fixed = is_fixed_setpoint(row, element, fixed_set)
             values = labels(row)
+            group = None if (fixed or battery) else solar_group(row)
             name, factor = (None, None) if fixed else resolve_rule(
-                list(values), season, rules, battery=battery)
+                list(values), season, rules, battery=battery, group=group)
             if basis == 'builder' and not battery and not fixed:
                 name, factor = builder.get((element, idx), (None, None))
             before_p = _float(row, 'p_mw')
@@ -268,9 +294,11 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
             fallback = False
             status = 'fixed_setpoint_preserved' if fixed else 'unconfigured_preserved'
             if factor is not None:
-                after_scale = factor
-                effective = 'builder_setpoint' if basis == 'builder' else 'setpoint'
                 status = 'scaled'
+                chained = basis == 'setpoint' and not battery
+                after_scale = before_scale * factor if chained else factor
+                effective = ('chained_setpoint' if chained else
+                             'builder_setpoint' if basis == 'builder' else 'setpoint')
                 if basis == 'installed':
                     if np.isfinite(installed):
                         after_p = (-1. if before_p < 0 else 1.) * installed
@@ -306,8 +334,8 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
             record.update(
                 season=season, element_type=element, element_index=idx,
                 element_name=row.get('name'), technology=' | '.join(sorted(values)),
-                is_battery=battery, is_fixed_setpoint=fixed, rule=name,
-                requested_factor=factor, basis=basis,
+                solar_scaling_group=group, is_battery=battery, is_fixed_setpoint=fixed,
+                rule=name, requested_factor=factor, basis=basis,
                 p_input_before_mw=before_p, scaling_before=before_scale,
                 p_set_before_mw=before_op, p_installed_mw=installed, rating_column=column,
                 p_input_after_mw=after_p, scaling_after=after_scale,
@@ -324,8 +352,8 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
     n_fb = sum(p[-1]['missing_rating_fallback'] for p in plans)
     if n_fb:
         warnings.warn(f'{n_fb} scalable element(s) have no explicit installed MW; '
-                      'using unscaled p_mw for dispatch only. See effective_basis in '
-                      'Scaling audit.', UserWarning, stacklevel=2)
+                      'p_mw is kept and only the factor is replaced. See effective_basis '
+                      'in Scaling audit.', UserWarning, stacklevel=2)
     for element, idx, p, scale, on, record in plans:
         if record['requested_factor'] is not None:
             net[element].at[idx, 'p_mw'] = p

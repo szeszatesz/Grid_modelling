@@ -6,7 +6,7 @@ from contingency.contingency_analysis_pp import (
 )
 
 builder = NetworkBuilder()
-net = builder.load("PandaPower/models/model_20261019_194732.json")
+net = builder.load("PandaPower/models/model_20261111_170538.json")
 
 # Generic edits before the study (examples; uncomment and adapt):
 # modify_elements(net, "line", "LINE_A", max_i_ka=1.50)
@@ -18,7 +18,7 @@ net = builder.load("PandaPower/models/model_20261019_194732.json")
 
 study = ContingencyStudy(
     net=net,
-    target_bus="CSEG GY1    120.00",  # exact name, bus index, mapping or query
+    target_bus="CEGL GY1    120.00",  # exact name, bus index, mapping or query examples: CSEG GY1    120.00
     technologies=[
         {"name": "WIND_NEW", "technology": "wind", "P_MW": 50.0},
         {"name": "BATTERY_NEW", "technology": "battery", "P_MW": 20.0},
@@ -32,13 +32,19 @@ study = ContingencyStudy(
         voltage_limits_min_kv=36.0,
         capacity_tolerance_mw=1.0,            
         scale_existing_generators=True,
+        generator_scaling_basis = "installed",  # or "setpoint" MW basis
         load_scales = {
             "summer": {"P": 1.0, "Q": 1.0},
             "winter": {"P": 1.0, "Q": 1.0},
         },
         generator_scales = {
-            "wind": {"summer": 0.4, "winter": 1.0},
-            "solar": {"summer": 0.4, "winter": 0.20},
+            "wind": {"summer": 1.0, "winter": 1.0},
+            "solar": {"summer": 0.5, "winter": 0.20},      # only for solar rows without a portfolio
+            "HMKE": {"summer": 0.1, "winter": 0.20},
+            "MEKH_0_5_TO_5": {"summer": 0.2, "winter": 0.30},
+            "MEKH_ABOVE_5": {"summer": 0.3, "winter": 0.30},
+            "BTM_MV": {"summer": 0.4, "winter": 0.3},
+            "DISTRIBUTED_22KV": {"summer": 0.5, "winter": 0.3},
             "battery": {"summer": 0.0, "winter": 0.0},
         },
         power_flow_options={

@@ -244,6 +244,7 @@ def write_report(path, net, results: Iterable[ContingencyResult],
                  grid_power_tables: dict[str, pd.DataFrame] | None = None,
                  scaling_audit: pd.DataFrame | None = None,
                  capacity_search=None,
+                 scope_table: pd.DataFrame | None = None,
                  violation_change_threshold_percent: float = 0.5) -> Path:
     """Write a robust, atomic, multi-sheet contingency workbook.
 
@@ -321,10 +322,13 @@ def write_report(path, net, results: Iterable[ContingencyResult],
         with pd.ExcelWriter(temp_path, engine="openpyxl") as writer:
             study_df.to_excel(writer, sheet_name="Study", index=False)
             parameter_df.to_excel(writer, sheet_name="Parameters", index=False)
+            if scope_table is not None:
+                scope_table.map(_finite).to_excel(writer, sheet_name="Scope", index=False)
+                written_scope = True
             grid_df.to_excel(writer, sheet_name="Grid", index=False)
             cases_df.to_excel(writer, sheet_name="Cases", index=False)
             violations_df.to_excel(writer, sheet_name="Violations", index=False)
-            written = ["Study", "Parameters", "Grid", "Cases", "Violations"]
+            written = ["Study", "Parameters"] + (["Scope"] if scope_table is not None else []) + ["Grid", "Cases", "Violations"]
             if capacity_search is not None:
                 bottleneck_df.to_excel(writer, sheet_name="Bottleneck", index=False)
                 trials_df.to_excel(writer, sheet_name="Capacity search", index=False)

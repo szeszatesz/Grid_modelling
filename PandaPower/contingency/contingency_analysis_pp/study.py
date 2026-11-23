@@ -13,9 +13,10 @@ from .engine import make_outages, run_contingencies
 from .violations import check_violations
 from .capacity import find_max_capacity_detailed, _inject, _drop_sgens
 from .reporting import write_report
-from .topology import get_relevant_contingency_lines
+from .topology import get_contingency_scope
 from model_power_summary import collect_model_power_tables
 from .scaling import apply_generator_scaling, battery_mask, seasonal_factor, validate_factor, attach_actual_results
+
 
 class ContingencyStudy:
     """IPSA-style seasonal N-1 connection-capacity study for pandapower."""
@@ -30,12 +31,15 @@ class ContingencyStudy:
         self.ignored_elements = ignored_elements or set()
         self.config = config or StudyConfig()
         self.outage_elements_were_explicit = outage_elements is not None
+        self.scope = None
         if outage_elements is None:
-            relevant = get_relevant_contingency_lines(
-                net, self.target_bus,
-                ignored={r.index for r in self.ignored_elements if r.element_type == "line"},
-            )
-            self.outages = make_outages(net, "line", relevant)
+            c = self.config
+            self.scope = get_contingency_scope(
+                net, self.target_bus, ignored=self.ignored_elements, mode=c.outage_scope,
+                dso_min_kv=c.scope_dso_min_kv, tso_min_kv=c.scope_tso_min_kv,
+                max_other_lines=c.scope_max_other_lines, max_depth=c.scope_max_depth,
+                include_target_equipment=c.scope_include_target_equipment)
+            self.outages = self.scope.outages()
         else:
             self.outages = list(outage_elements)
 
@@ -53,6 +57,7 @@ class ContingencyStudy:
                 self.ignored_elements, key=lambda x: (x.element_type, str(x.index))
             )],
             "config": asdict(self.config),
+            "scope_notes": list(self.scope.notes) if self.scope else [],
         }
 
     def _scaling_rules(self):
@@ -188,6 +193,7 @@ class ContingencyStudy:
                         "grid_operational_mode": "results" if background_converged else "setpoints",
                         "grid_power_flow_converged": background_converged,
                         "grid_power_flow_error": background_error,
+                        "scope_table": None if self.scope is None else self.scope.table,
                     },
                     study_parameters=self.parameters(),
                     scaling_audit=self.scaling_audit,

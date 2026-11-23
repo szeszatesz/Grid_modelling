@@ -18,7 +18,7 @@ net = builder.load("PandaPower/models/model_20261123_113455.json")
 
 study = ContingencyStudy(
     net=net,
-    target_bus="SZHO B      400.00",  # exact name, bus index, mapping or query examples: CSEG GY1    120.00, CEGL GY1    120.00, SZHO B      400.00
+    target_bus="CSEG GY1    120.00",  # exact name, bus index, mapping or query examples: CSEG GY1    120.00, CEGL GY1    120.00, SZHO B      400.00
     technologies=[
         {"name": "WIND_NEW", "technology": "wind", "P_MW": 500.0},
         {"name": "BATTERY_NEW", "technology": "battery", "P_MW": 20.0},

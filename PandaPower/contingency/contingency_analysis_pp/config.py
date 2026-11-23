@@ -51,3 +51,10 @@ class StudyConfig:
         "max_iteration": 50,
         "tolerance_mva": 1e-8,
     })
+    outage_scope: str = "extended"            # "extended" | "target_lines" (old behaviour)
+    scope_dso_min_kv: float = 100.0           # 120 kV layer = [dso_min, tso_min)  (model buses are 132 kV)
+    scope_tso_min_kv: float = 200.0           # 220/400/750 kV
+    scope_max_other_lines: int = 3            # more than this => main DSO substation
+    scope_max_depth: int | None = None        # line hops from the target; None = unlimited
+    scope_include_target_equipment: bool = False   # also test trafos / HV lines of the target substation
+

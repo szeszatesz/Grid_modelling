@@ -74,30 +74,31 @@ def build_shunts(
         # If So is given and non-zero, work out how many steps are active.
         # Steps with step_no <= active_steps are in service.
 
-        if not math.isnan(so_mvar) and so_mvar != 0.0 and s_per_step != 0.0:
-            active_steps    = round(abs(so_mvar) / abs(s_per_step))
-   
+        so_raw = _float(row, "So", 0.0)
+        so_mvar = 0.0 if math.isnan(so_raw) else -so_raw
 
-        # ── Choose element type ────────────────────────────────────────────
-        is_mscdn = (not math.isnan(yz_us)) and (abs(yz_us) > 1e-9)
-
-        if is_mscdn:
-            # MSCDN: susceptance from Yz column (µS → p.u.)
-            # S column is the parallel capacitor stage (MVAr) — also reflected
-            # as a q_mvar on the shunt for consistent power accounting.
-            b_pu   = _us_to_b_pu(yz_us, vn_kv)
-            q_mvar = so_mvar          # MVAr component (positive = capacitive)
+        # Reset on every row
+        if s_per_step != 0.0 and so_mvar != 0.0:
+            active_steps = int(round(abs(so_mvar) / abs(s_per_step)))
+            active_steps = max(0, min(active_steps, n_steps))
         else:
-            # Plain reactor or fixed capacitor bank — use Q directly
-            b_pu   = _mvar_to_b_pu(s_per_step, vn_kv)
-            q_mvar = so_mvar
+            active_steps = 0          # So == 0 means all steps are off
+
+        is_mscdn = (not math.isnan(yz_us)) and abs(yz_us) > 1e-9
+
+        # Rated values per step, independent of So
+        if is_mscdn:
+            b_pu = _us_to_b_pu(yz_us, vn_kv)
+        else:
+            b_pu = _mvar_to_b_pu(s_per_step, vn_kv)
+        q_rated = -s_per_step   # same sign convention as so_mvar; adjust if needed
            
 
         try:
             idx = pp.create_shunt(
                 net,
                 bus        = bus_idx,
-                q_mvar     = q_mvar,          # positive = capacitive
+                q_mvar     = q_rated,          # positive = capacitive
                 p_mw       = 0.0,
                 name       = name,
                 in_service = in_service,

@@ -11,11 +11,11 @@ import datetime
 
 # ── 1. Build the network ──────────────────────────────────────────────────────
 builder = NetworkBuilder()
-building = False
+building = True
 if building:
     net = builder.build(
         excel_path="PandaPower/input_data/2034sn_fp1_tv1_3_none-torf_de_all_v22_celallapot_zarlat_summer_small_load_increase.xlsx",
-        MEKH_excel_path="PandaPower/input_data/2026-07-30_RES_above_500kW_production_projects.xlsx",
+        MEKH_excel_path="PandaPower/input_data/2026-10-30_RES_above_500kW_production_projects.xlsx",
         HMKE_excel_path="PandaPower/input_data/HMKE_2025_Statisztika.xlsx",
         bus_geo_xlsx="PandaPower/input_data/Geo_Coordinates.xlsx",
         line_geo_csvs=["PandaPower/input_data/GRIDMODELL/400kV_pont.csv"],
@@ -27,9 +27,9 @@ if building:
         battery_mode=-1,  # Battery mode: -1 = charging (load), 0 = idle, +1 = discharging (production)
     )
 else:
-    net = builder.load("PandaPower/models/model_20261019_184951.json")
+    #net = builder.load("PandaPower/models/model_20261107_085931.json")
 
-timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 diagnose = False
 if diagnose:
@@ -74,16 +74,16 @@ if exe_lf:
 
 #draw_network(net, output_path="network_bus_cord.png", show_labels=True)
 #simple_plotly(net,filename=f"PandaPower/models/network_simple_plotly_{timestamp}.html")
-vlevel_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=10, line_width=1, respect_switches=False, zoomlevel=8, use_line_geo=False, on_map=False, map_style='basic', projection='23700')
+#vlevel_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=10, line_width=1, respect_switches=False, zoomlevel=8, use_line_geo=False, on_map=False, map_style='basic', projection='23700')
 #pf_res_plotly(net, filename=f"PandaPower/models/network_vlevel_plotly_{timestamp}.html", auto_open=False, bus_size=10, line_width=1, zoomlevel=8, use_line_geo=False, on_map=True, map_style='basic')
 
 # --- 4. Print summary of the network ---
-print_summary = True
+print_summary = False
 if print_summary:
     from model_power_summary import print_model_powers
 
     summary = print_model_powers(
-        "PandaPower/models/model_20261019_194732.json",
+        "/home/attilas/Grid_modelling/PandaPower/models/model_20261111_162703.json",
         output_dir="PandaPower/models/results",
     )
 

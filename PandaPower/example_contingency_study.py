@@ -6,7 +6,7 @@ from contingency.contingency_analysis_pp import (
 )
 
 builder = NetworkBuilder()
-net = builder.load("PandaPower/models/model_20261123_113455.json")
+net = builder.load("PandaPower/models/model_20261123_143227.json")
 
 # Generic edits before the study (examples; uncomment and adapt):
 # modify_elements(net, "line", "LINE_A", max_i_ka=1.50)
@@ -40,12 +40,12 @@ study = ContingencyStudy(
         generator_scales = {
             "wind": {"summer": 1.0, "winter": 1.0},
             "solar": {"summer": 0.5, "winter": 0.20},      # only for solar rows without a portfolio
-            "HMKE": {"summer": 0.5, "winter": 0.20},
-            "MEKH_0_5_TO_5": {"summer": 0.5, "winter": 0.30},
-            "MEKH_ABOVE_5": {"summer": 0.3, "winter": 0.30},
-            "BTM_MV": {"summer": 0.5, "winter": 0.3},
-            "DISTRIBUTED_22KV": {"summer": 0.5, "winter": 0.3},
-            "battery": {"summer": 0.0, "winter": 0.0},
+            "HMKE": {"summer": 0.8, "winter": 0.20},
+            "MEKH_0_5_TO_5": {"summer": 0.8, "winter": 0.30},
+            "MEKH_ABOVE_5": {"summer": 0.9, "winter": 0.30},
+            "BTM_MV": {"summer": 0.7, "winter": 0.3},
+            "DISTRIBUTED_22KV": {"summer": 0.7, "winter": 0.3},
+            "battery": {"summer": 0, "winter": 0.0},   
         },
         power_flow_options={
             "algorithm": "nr",

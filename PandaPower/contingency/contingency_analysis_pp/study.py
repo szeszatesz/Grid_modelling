@@ -11,7 +11,7 @@ from .models import Outage, ElementRef
 from .selectors import resolve_one
 from .engine import make_outages, run_contingencies
 from .violations import check_violations
-from .capacity import find_max_capacity, _inject, _drop_sgens
+from .capacity import find_max_capacity_detailed, _inject, _drop_sgens
 from .reporting import write_report
 from .topology import get_relevant_contingency_lines
 from model_power_summary import collect_model_power_tables
@@ -135,8 +135,11 @@ class ContingencyStudy:
                 finally:
                     _drop_sgens(self.net, created)
                 full_capacity = sum(float(t["P_MW"]) for t in self.technologies)
+                search = None
+                # Only significant violations limit the capacity; the rest
+                # stay visible in the Violations sheet.
                 if any(v.significant for v in violations):
-                    max_capacity, results = find_max_capacity(
+                    search = find_max_capacity_detailed(
                         self.net, self.target_bus, self.technologies, self.outages,
                         season=season,
                         generator_scales=self._scaling_rules(),
@@ -151,6 +154,7 @@ class ContingencyStudy:
                         voltage_limits_min_kv=self.config.voltage_limits_min_kv,
                         significance_threshold_percent=self.config.violation_change_threshold_percent,
                     )
+                    max_capacity, results = search.best_mw, search.results
                     violations = self._check(results)
                 else:
                     max_capacity = full_capacity
@@ -176,25 +180,28 @@ class ContingencyStudy:
                         "target_bus": self.target_bus,
                         "target_name": self.net.bus.at[self.target_bus, "name"],
                         "max_capacity_mw": max_capacity,
+                        "requested_capacity_mw": full_capacity,
                         "contingency_count": len(self.outages),
+                        "violations_total": len(violations),
+                        "violations_blocking_capacity": sum(v.significant for v in violations),
                         "grid_snapshot": "scaled background N-0; candidate excluded",
                         "grid_operational_mode": "results" if background_converged else "setpoints",
                         "grid_power_flow_converged": background_converged,
                         "grid_power_flow_error": background_error,
-                        "violations_total": len(violations),
-                        "violations_blocking_capacity": sum(v.significant for v in violations),
                     },
                     study_parameters=self.parameters(),
                     scaling_audit=self.scaling_audit,
                     grid_power_tables=collect_model_power_tables(
                         self.net, operational="results" if background_converged else "setpoints"
                     ),
+                    capacity_search=search,
                     violation_change_threshold_percent=self.config.violation_change_threshold_percent,
                 )
                 study_results[season] = {
                     "max_capacity_mw": max_capacity,
                     "results": results, "violations": violations, "report": report,
                     "scaling_audit": self.scaling_audit,
+                    "capacity_search": search,
                 }
         except BaseException as exc:
             primary_error = exc

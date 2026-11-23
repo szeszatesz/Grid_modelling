@@ -75,15 +75,10 @@ def check_violations(results: Iterable[ContingencyResult], *,
                      significance_threshold_percent: float | None = None) -> list[Violation]:
     """Return post-contingency violations with base/post/delta audit values.
 
-    Absolute under/overvoltage checks can be limited by nominal voltage. With
-    ``voltage_limits_min_kv=36`` the 35 kV and lower network is omitted, while
-    target-bus voltage-change checks remain active at every voltage level.
-
     Every violation is returned. With ``significance_threshold_percent`` set,
     violations whose relative base->post change is <= the threshold carry
-    ``significant=False``; callers searching for feasible capacity should
-    only consider ``significant`` ones. Violations without a base value
-    (including non-convergence) are always significant.
+    ``significant=False``; capacity searches only consider ``significant`` ones.
+    Violations without a base value (including non-convergence) always count.
     """
     threshold = validate_significance_threshold(significance_threshold_percent)
     ignored = ignored_elements or set()

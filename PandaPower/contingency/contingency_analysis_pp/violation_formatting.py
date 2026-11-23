@@ -1,14 +1,14 @@
 """Excel highlighting for the Violations worksheet.
 
-delta_percent = |post - base| / |base| * 100, a formula in column M.
-The threshold sits in an editable cell (P1), so colours update live in Excel.
+delta_percent = |post - base| / |base| * 100, a formula in a new column.
+The threshold sits in an editable cell, so colours update live in Excel.
   yellow : delta_percent <= threshold (violation essentially unchanged)
   red    : delta_percent  > threshold, or no usable base value (new/unknown)
 """
 from __future__ import annotations
 import math
 from openpyxl.formatting.rule import FormulaRule
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
@@ -46,19 +46,16 @@ def highlight_violations(ws, threshold_percent: float = 0.5) -> None:
                       f'ABS({post}{row}-{base}{row})/ABS({base}{row})*100,"")')
         cell.number_format = "0.0000"
     label_col, value_col = pct_col + 2, pct_col + 3
-    label = ws.cell(row=1, column=label_col, value="Threshold [%]")
-    label.font = Font(bold=True)
+    ws.cell(row=1, column=label_col,
+            value="Threshold [%]: yellow = change <= threshold, red = above or no base").font = Font(bold=True)
     value = ws.cell(row=1, column=value_col, value=threshold)
     value.font = Font(bold=True, color="0000FF")
     value.number_format = "0.0000"
-    ws.cell(row=2, column=label_col, value="Yellow: delta_percent <= threshold").fill = YELLOW
-    ws.cell(row=3, column=label_col, value="Red: delta_percent > threshold or no base").fill = RED
     ws.column_dimensions[pct].width = 14
-    ws.column_dimensions[get_column_letter(label_col)].width = 42
+    ws.column_dimensions[get_column_letter(label_col)].width = 60
     ws.column_dimensions[get_column_letter(value_col)].width = 12
     if last_data >= 2:
-        first_col = get_column_letter(1)
-        area = f"{first_col}2:{pct}{last_data}"
+        area = f"A2:{pct}{last_data}"
         t = f"${get_column_letter(value_col)}$1"
         ws.conditional_formatting.add(area, FormulaRule(
             formula=[f'AND(${pct}2<>"",${pct}2<={t})'], fill=YELLOW, stopIfTrue=True))

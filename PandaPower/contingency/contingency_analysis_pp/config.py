@@ -26,6 +26,9 @@ class StudyConfig:
     max_voltage_pu: float | None = None
     voltage_limits_min_kv: float | None = 36.0
     capacity_tolerance_mw: float = 1.0
+    # Violations whose |post-base|/|base|*100 is <= this value are reported
+    # (yellow) but do not limit the installable capacity.
+    violation_change_threshold_percent: float = 0.5
     scale_existing_generators: bool = True
     # None: preserve unconfigured technologies. Set a number to scale all others.
     default_generator_scale: float | None = None
@@ -47,7 +50,4 @@ class StudyConfig:
         "enforce_q_lims": True,
         "max_iteration": 50,
         "tolerance_mva": 1e-8,
-    }
-    )
-    violation_change_threshold_percent: float = 0.5
-    
+    })

@@ -15,6 +15,7 @@ from openpyxl.utils import get_column_letter
 from .models import ContingencyResult
 from .violations import Violation
 from .violation_formatting import highlight_violations, validate_threshold
+from .bottleneck import bottleneck_frame, summary_text
 
 # Leave margin below Excel's hard limit of 1,048,576 rows.
 _MAX_DATA_ROWS_PER_SHEET = 1_000_000
@@ -26,7 +27,7 @@ _CASE_COLUMNS = [
 _VIOLATION_COLUMNS = [
     "case_id", "kind", "element_type", "element_index", "element_name",
     "value", "limit", "base_value", "post_value", "delta_value",
-    "pre_existing", "significant", "message",
+    "pre_existing", "significant", "evaluated_at_mw", "bottleneck", "message",
 ]
 _BRANCH_COLUMNS = [
     "case_id", "element_type", "element_index", "element_name",
@@ -110,7 +111,6 @@ def _parameter_frame(parameters: dict) -> pd.DataFrame:
     return _safe_frame(rows, ["parameter", "value", "type"])
 
 
-
 def _grid_frame(tables: dict[str, pd.DataFrame] | None) -> pd.DataFrame:
     """Combine print_model_powers tables into one filterable Grid worksheet."""
     frames: list[pd.DataFrame] = []
@@ -124,6 +124,7 @@ def _grid_frame(tables: dict[str, pd.DataFrame] | None) -> pd.DataFrame:
     source = nonempty if nonempty else frames
     frame = pd.concat(source, ignore_index=True, sort=False)
     return frame.map(_finite)
+
 
 def _result_rows(net, results: list[ContingencyResult]):
     cases: list[dict] = []
@@ -186,13 +187,17 @@ def _result_rows(net, results: list[ContingencyResult]):
     return cases, buses, branches
 
 
-def _violation_rows(net, violations: list[Violation]) -> list[dict]:
+def _violation_rows(net, violations: list[Violation], *,
+                    evaluated_at_mw=None, bottleneck: bool | None = None) -> list[dict]:
     rows = []
     for violation in violations:
         row = _object_dict(violation)
         table = row.get("element_type")
         idx = row.get("element_index")
         row["element_name"] = _name(net, table, idx) if table and idx is not None else None
+        row["evaluated_at_mw"] = evaluated_at_mw
+        row["bottleneck"] = (bool(row.get("significant", True))
+                             if bottleneck is None else bottleneck)
         rows.append(row)
     return rows
 
@@ -237,14 +242,19 @@ def write_report(path, net, results: Iterable[ContingencyResult],
                  metadata: dict | None = None,
                  study_parameters: dict | None = None,
                  grid_power_tables: dict[str, pd.DataFrame] | None = None,
-                 violation_change_threshold_percent: float = 0.5,
-                 scaling_audit: pd.DataFrame | None = None) -> Path:
-    
+                 scaling_audit: pd.DataFrame | None = None,
+                 capacity_search=None,
+                 violation_change_threshold_percent: float = 0.5) -> Path:
     """Write a robust, atomic, multi-sheet contingency workbook.
 
     The workbook always contains headers, even if no contingency converged or
     no feasible connection capacity was found. Very large long-form result
     tables are automatically split across Excel worksheets.
+
+    With ``capacity_search`` (a capacity.CapacitySearch) the report also gets
+    'Capacity search' (every trial size) and 'Bottleneck' (the significant
+    violations at the smallest infeasible size, ranked) sheets, and those
+    violations are appended to 'Violations' with bottleneck=True.
     """
     threshold = validate_threshold(violation_change_threshold_percent)
     path = Path(path).expanduser()
@@ -255,19 +265,43 @@ def write_report(path, net, results: Iterable[ContingencyResult],
     results = list(results)
     violations = list(violations)
     case_rows, bus_rows, branch_rows = _result_rows(net, results)
-    violation_rows = _violation_rows(net, violations)
+
+    best_mw = getattr(capacity_search, "best_mw", None)
+    limit_mw = getattr(capacity_search, "limiting_mw", None)
+    violation_rows = _violation_rows(net, violations, evaluated_at_mw=best_mw)
+    bottleneck_df = pd.DataFrame()
+    trials_df = pd.DataFrame()
+    if capacity_search is not None:
+        def lookup(table, idx):
+            return _name(net, table, idx) if table and idx is not None else None
+        bottleneck_df = bottleneck_frame(capacity_search, lookup).map(_finite)
+        trials_df = _safe_frame(capacity_search.trials,
+                                ["trial_mw", "feasible", "blocking_violations", "all_violations"])
+        if limit_mw is not None and limit_mw != best_mw:
+            # Smallest infeasible size: append its significant violations.
+            violation_rows += _violation_rows(
+                net, [v for v in capacity_search.blocking_at_limit if v.significant],
+                evaluated_at_mw=limit_mw, bottleneck=True)
 
     meta = dict(metadata or {})
     meta.update({
         "case_count_written": len(results),
-        "violation_count_written": len(violations),
+        "violation_count_written": len(violation_rows),
         "bus_result_rows": len(bus_rows),
         "branch_result_rows": len(branch_rows),
+        "violation_change_threshold_percent": threshold,
         "report_status": (
             "OK" if results else
             "NO CASE RESULTS: inspect capacity search/base N-1 feasibility"
         ),
     })
+    if capacity_search is not None:
+        meta.update({
+            "capacity_best_mw": best_mw,
+            "capacity_limiting_trial_mw": limit_mw,
+            "capacity_blocking_violations": len(capacity_search.blocking_at_limit),
+            "capacity_limited_by": summary_text(capacity_search, bottleneck_df),
+        })
 
     study_df = _safe_frame([meta], list(meta.keys()))
     cases_df = _safe_frame(case_rows, _CASE_COLUMNS)
@@ -291,6 +325,10 @@ def write_report(path, net, results: Iterable[ContingencyResult],
             cases_df.to_excel(writer, sheet_name="Cases", index=False)
             violations_df.to_excel(writer, sheet_name="Violations", index=False)
             written = ["Study", "Parameters", "Grid", "Cases", "Violations"]
+            if capacity_search is not None:
+                bottleneck_df.to_excel(writer, sheet_name="Bottleneck", index=False)
+                trials_df.to_excel(writer, sheet_name="Capacity search", index=False)
+                written += ["Bottleneck", "Capacity search"]
             written += _write_chunked(writer, branches_df, "Branch results")
             written += _write_chunked(writer, buses_df, "Bus results")
             if scaling_audit is not None:

@@ -4,7 +4,7 @@ import pandapower as pp
 
 from .models import Outage, ContingencyResult, ElementRef
 from .engine import run_contingencies
-from .violations import check_violations
+from .violations import check_violations, significant_only
 from .scaling import seasonal_factor
 
 
@@ -37,7 +37,8 @@ def _drop_sgens(net, indices):
 
 def _violations(results, *, max_loading_percent, voltage_change_limit_pu,
                 min_voltage_pu, max_voltage_pu, ignored_elements,
-                bus_nominal_kv, voltage_limits_min_kv):
+                bus_nominal_kv, voltage_limits_min_kv,
+                significance_threshold_percent=None):
     return check_violations(
         results,
         max_loading_percent=max_loading_percent,
@@ -47,6 +48,7 @@ def _violations(results, *, max_loading_percent, voltage_change_limit_pu,
         ignored_elements=ignored_elements,
         bus_nominal_kv=bus_nominal_kv,
         voltage_limits_min_kv=voltage_limits_min_kv,
+        significance_threshold_percent=significance_threshold_percent,
     )
 
 
@@ -61,18 +63,17 @@ def find_max_capacity(net, target_bus, technologies: list[dict],
                       ignored_elements: set[ElementRef] | None = None,
                       bus_nominal_kv: Mapping[Hashable, float] | None = None,
                       voltage_limits_min_kv: float | None = None,
+                      significance_threshold_percent: float | None = None,
                       progress: Callable[[float, int], None] | None = None
                       ) -> tuple[float, list[ContingencyResult]]:
-    """Find the greatest feasible project capacity."""
+    """Find the greatest feasible project capacity.
+
+    Violations whose base->post change is <= significance_threshold_percent
+    are NOT counted as blocking (they remain reportable via check_violations).
+    """
     original = sum(float(t["P_MW"]) for t in technologies)
     outages = list(outages)
-
-    zero_results = run_contingencies(
-        net, outages, target_bus=target_bus,
-        power_flow_options=power_flow_options,
-    )
-    zero_violations = _violations(
-        zero_results,
+    options = dict(
         max_loading_percent=max_loading_percent,
         voltage_change_limit_pu=voltage_change_limit_pu,
         min_voltage_pu=min_voltage_pu,
@@ -80,10 +81,17 @@ def find_max_capacity(net, target_bus, technologies: list[dict],
         ignored_elements=ignored_elements,
         bus_nominal_kv=bus_nominal_kv,
         voltage_limits_min_kv=voltage_limits_min_kv,
+        significance_threshold_percent=significance_threshold_percent,
     )
+
+    zero_results = run_contingencies(
+        net, outages, target_bus=target_bus,
+        power_flow_options=power_flow_options,
+    )
+    zero_blocking = significant_only(_violations(zero_results, **options))
     if progress:
-        progress(0.0, len(zero_violations))
-    if original <= 0 or zero_violations:
+        progress(0.0, len(zero_blocking))
+    if original <= 0 or zero_blocking:
         return 0.0, zero_results
 
     lo, hi = 0.0, original
@@ -99,21 +107,12 @@ def find_max_capacity(net, target_bus, technologies: list[dict],
                 net, outages, target_bus=target_bus,
                 power_flow_options=power_flow_options,
             )
-            violations = _violations(
-                results,
-                max_loading_percent=max_loading_percent,
-                voltage_change_limit_pu=voltage_change_limit_pu,
-                min_voltage_pu=min_voltage_pu,
-                max_voltage_pu=max_voltage_pu,
-                ignored_elements=ignored_elements,
-                bus_nominal_kv=bus_nominal_kv,
-                voltage_limits_min_kv=voltage_limits_min_kv,
-            )
+            blocking = significant_only(_violations(results, **options))
         finally:
             _drop_sgens(net, created)
         if progress:
-            progress(trial, len(violations))
-        if violations:
+            progress(trial, len(blocking))
+        if blocking:
             hi = trial
         else:
             lo, best, best_results = trial, trial, results

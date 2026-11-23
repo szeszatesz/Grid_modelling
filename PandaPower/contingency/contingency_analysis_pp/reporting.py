@@ -26,7 +26,7 @@ _CASE_COLUMNS = [
 _VIOLATION_COLUMNS = [
     "case_id", "kind", "element_type", "element_index", "element_name",
     "value", "limit", "base_value", "post_value", "delta_value",
-    "pre_existing", "message",
+    "pre_existing", "significant", "message",
 ]
 _BRANCH_COLUMNS = [
     "case_id", "element_type", "element_index", "element_name",

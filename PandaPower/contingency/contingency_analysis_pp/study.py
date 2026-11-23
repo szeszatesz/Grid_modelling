@@ -106,6 +106,7 @@ class ContingencyStudy:
             ignored_elements=self.ignored_elements,
             bus_nominal_kv=self.net.bus["vn_kv"].to_dict(),
             voltage_limits_min_kv=self.config.voltage_limits_min_kv,
+            significance_threshold_percent=self.config.violation_change_threshold_percent,
         )
 
     def run(self, seasons=("summer", "winter"), output_dir="results") -> dict:
@@ -134,7 +135,7 @@ class ContingencyStudy:
                 finally:
                     _drop_sgens(self.net, created)
                 full_capacity = sum(float(t["P_MW"]) for t in self.technologies)
-                if violations:
+                if any(v.significant for v in violations):
                     max_capacity, results = find_max_capacity(
                         self.net, self.target_bus, self.technologies, self.outages,
                         season=season,
@@ -148,6 +149,7 @@ class ContingencyStudy:
                         ignored_elements=self.ignored_elements,
                         bus_nominal_kv=self.net.bus["vn_kv"].to_dict(),
                         voltage_limits_min_kv=self.config.voltage_limits_min_kv,
+                        significance_threshold_percent=self.config.violation_change_threshold_percent,
                     )
                     violations = self._check(results)
                 else:
@@ -179,6 +181,8 @@ class ContingencyStudy:
                         "grid_operational_mode": "results" if background_converged else "setpoints",
                         "grid_power_flow_converged": background_converged,
                         "grid_power_flow_error": background_error,
+                        "violations_total": len(violations),
+                        "violations_blocking_capacity": sum(v.significant for v in violations),
                     },
                     study_parameters=self.parameters(),
                     scaling_audit=self.scaling_audit,

@@ -14,6 +14,7 @@ from openpyxl.utils import get_column_letter
 
 from .models import ContingencyResult
 from .violations import Violation
+from .violation_formatting import highlight_violations, validate_threshold
 
 # Leave margin below Excel's hard limit of 1,048,576 rows.
 _MAX_DATA_ROWS_PER_SHEET = 1_000_000
@@ -236,13 +237,16 @@ def write_report(path, net, results: Iterable[ContingencyResult],
                  metadata: dict | None = None,
                  study_parameters: dict | None = None,
                  grid_power_tables: dict[str, pd.DataFrame] | None = None,
+                 violation_change_threshold_percent: float = 0.5,
                  scaling_audit: pd.DataFrame | None = None) -> Path:
+    
     """Write a robust, atomic, multi-sheet contingency workbook.
 
     The workbook always contains headers, even if no contingency converged or
     no feasible connection capacity was found. Very large long-form result
     tables are automatically split across Excel worksheets.
     """
+    threshold = validate_threshold(violation_change_threshold_percent)
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() != ".xlsx":
@@ -292,6 +296,7 @@ def write_report(path, net, results: Iterable[ContingencyResult],
             if scaling_audit is not None:
                 written += _write_chunked(writer, scaling_audit, "Scaling audit")
             _format_workbook(writer, written)
+            highlight_violations(writer.book["Violations"], threshold)
         os.replace(temp_path, path)
     except Exception:
         temp_path.unlink(missing_ok=True)

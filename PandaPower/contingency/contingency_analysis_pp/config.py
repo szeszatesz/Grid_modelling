@@ -47,4 +47,7 @@ class StudyConfig:
         "enforce_q_lims": True,
         "max_iteration": 50,
         "tolerance_mva": 1e-8,
-    })
+    }
+    )
+    violation_change_threshold_percent: float = 0.5
+    

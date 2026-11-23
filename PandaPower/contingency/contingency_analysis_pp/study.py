@@ -185,6 +185,7 @@ class ContingencyStudy:
                     grid_power_tables=collect_model_power_tables(
                         self.net, operational="results" if background_converged else "setpoints"
                     ),
+                    violation_change_threshold_percent=self.config.violation_change_threshold_percent,
                 )
                 study_results[season] = {
                     "max_capacity_mw": max_capacity,

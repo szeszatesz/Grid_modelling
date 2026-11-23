@@ -1155,6 +1155,7 @@ def _create_mekh_element(
             in_service=True,
             max_q_mvar=q_capability,
             min_q_mvar=-q_capability,
+            slack=False
         )
 
         net.gen.at[
@@ -1290,6 +1291,7 @@ def build_generators(
                 min_q_mvar = min_q_mvar,
                 max_p_mw   = max_p_mw,
                 min_p_mw   = min_p_mw,
+                slack=False
             )
             # Store technology for later use by apply_gen_scaling
             net.gen.at[idx, "technology"] = technology

@@ -1,16 +1,17 @@
-"""Seasonal dispatch for every balanced gen/sgen technology and battery form.
+"""Seasonal dispatch for balanced gen/sgen/load/storage elements.
 
-Missing installed MW never becomes guessed nameplate MW. By default an
-installed-mode row without an MW rating uses its unscaled p_mw reference,
-with a warning and effective_basis='setpoint_fallback' in the audit.
-Use missing_rating_policy='raise' to require strict installed-MW scaling.
+Fixed-setpoint generators (conventional plants, biogas, hydro and standalone
+OTHERRES, all MAVIR-provided) are NEVER scaled, in any basis. Batteries follow
+explicit battery rules. Missing installed MW is never guessed from sn_mva;
+solar/wind rows without an MW rating use their unscaled p_mw as the dispatch
+reference (audited fallback).
 """
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from contextlib import redirect_stdout
 from io import StringIO
-from collections.abc import Mapping
 import re
 import unicodedata
 import warnings
@@ -27,19 +28,25 @@ ALIASES = {
     'battery': {'battery', 'batterystrg', 'batterystorage', 'bess',
                 'akkumulator', 'akkumulatorosenergiatarolo'},
     'hydro': {'hydro', 'hydroranpond', 'hydroreserv'},
-    'gas': {'gas', 'gasbio', 'gasccgtnew', 'gasccgtold2', 'gasccgtpres1',
-            'gasccgtpres2', 'gasconvold1', 'gasocgtnew', 'othernonres'},
-    'coal': {'coal', 'hardcoalbf', 'hardcoalold1', 'lightoil'},
-    'nuclear': {'nuclear'},
 }
+# Fixed-setpoint technologies (MAVIR-provided dispatch, never scaled).
+FIXED_SETPOINT_TECHNOLOGIES = frozenset({
+    'nuclear', 'hardcoalbf', 'hardcoalold1', 'lightoil', 'othernonres',
+    'gasccgtnew', 'gasccgtold2', 'gasccgtpres1', 'gasccgtpres2',
+    'gasconvold1', 'gasocgtnew', 'gasbio', 'hydroranpond', 'hydroreserv',
+    'otherres'})
+# Solar rows carry the tuple label (SOLARPHOTOVO, ROOFTOPPV, OTHERRES); these
+# markers keep them scalable although 'otherres' alone is fixed.
+SCALABLE_MARKERS = frozenset({'solarphotovo', 'rooftoppv', 'solar', 'pv',
+                              'windonshore', 'windoffshore', 'wind'})
 AUDIT_COLUMNS = ['season', 'element_type', 'element_index', 'element_name',
-    'technology', 'is_battery', 'rule', 'requested_factor', 'basis',
-    'p_input_before_mw', 'scaling_before', 'p_set_before_mw', 'p_installed_mw',
-    'rating_column', 'p_input_after_mw', 'scaling_after', 'p_set_after_mw',
-    'expected_p_set_after_mw', 'p_error_mw', 'setpoint_ratio_after_before',
-    'utilization_installed', 'in_service_before', 'in_service_after',
-    'bus_in_service', 'slack', 'slack_weight', 'status', 'effective_basis',
-    'reference_p_mw', 'reference_source', 'rating_source',
+    'technology', 'is_battery', 'is_fixed_setpoint', 'rule', 'requested_factor',
+    'basis', 'p_input_before_mw', 'scaling_before', 'p_set_before_mw',
+    'p_installed_mw', 'rating_column', 'p_input_after_mw', 'scaling_after',
+    'p_set_after_mw', 'expected_p_set_after_mw', 'p_error_mw',
+    'setpoint_ratio_after_before', 'utilization_installed', 'in_service_before',
+    'in_service_after', 'bus_in_service', 'slack', 'slack_weight', 'status',
+    'effective_basis', 'reference_p_mw', 'reference_source', 'rating_source',
     'rating_is_legacy_proxy', 'missing_rating_fallback',
     'q_set_before_mvar', 'q_set_after_mvar']
 
@@ -71,6 +78,15 @@ def labels(row):
 
 def is_battery(row, element_type=''):
     return element_type == 'storage' or bool(labels(row) & ALIASES['battery'])
+
+
+def is_fixed_setpoint(row, element_type='', fixed=FIXED_SETPOINT_TECHNOLOGIES):
+    """True for non-battery gen/sgen in the fixed set and not solar/wind-tagged."""
+    if element_type not in ('gen', 'sgen') or is_battery(row, element_type):
+        return False
+    fixed = {key(f) for f in fixed}
+    found = labels(row)
+    return bool(found & fixed) and not (found & SCALABLE_MARKERS)
 
 
 def battery_mask(frame, element_type=''):
@@ -142,7 +158,7 @@ def _float(row, column, default=0.):
     return value
 
 
-def _builder_factors(net, season, rules):
+def _builder_factors(net, season, rules, fixed):
     try:
         from pp_builder.generator_builder import apply_gen_scaling
         from pp_builder.config import SOLAR_SCALING_DEFAULTS
@@ -162,7 +178,7 @@ def _builder_factors(net, season, rules):
         else:
             frame['technology'] = frame.technology.astype(object)
         for idx, row in frame.iterrows():
-            if is_battery(row, table):
+            if is_battery(row, table) or is_fixed_setpoint(row, table, fixed):
                 continue
             tech = tokens(row.get('technology'))
             if not tech:
@@ -171,33 +187,31 @@ def _builder_factors(net, season, rules):
                     if tech:
                         break
             if not tech:
-                # Preserve untagged rows unless a default/all rule applies.
                 name, factor = resolve_rule([], season, rules)
                 if factor is not None:
                     selected[(table, idx)] = (name, factor)
                 continue
-            raw_technology = row.get('technology')
-            if not tokens(raw_technology):
-                raw_technology = next(row.get(c) for c in TECH_COLUMNS[1:] if tokens(row.get(c)))
-            if isinstance(raw_technology, str) and raw_technology.strip().startswith(('(', '[')):
+            raw = row.get('technology')
+            if not tokens(raw):
+                raw = next(row.get(c) for c in TECH_COLUMNS[1:] if tokens(row.get(c)))
+            if isinstance(raw, str) and raw.strip().startswith(('(', '[')):
                 try:
-                    raw_technology = ast.literal_eval(raw_technology)
+                    raw = ast.literal_eval(raw)
                 except (ValueError, SyntaxError):
                     pass
-            frame.at[idx, 'technology'] = raw_technology
+            frame.at[idx, 'technology'] = raw
             name, factor = resolve_rule(list(labels(row)), season, rules)
             if factor is not None:
-                raw_labels = raw_technology if isinstance(raw_technology, (list, tuple)) else [raw_technology]
-                for label in raw_labels:
+                for label in (raw if isinstance(raw, (list, tuple)) else [raw]):
                     tech_overrides[label] = factor
             selected[(table, idx)] = (name or 'builder_defaults', None)
     with redirect_stdout(StringIO()):
         apply_gen_scaling(staged, season, tech_overrides=tech_overrides,
                           solar_overrides=solar_overrides or None)
     factors = {}
-    for (table, idx), (name, direct_factor) in selected.items():
+    for (table, idx), (name, direct) in selected.items():
         row = staged[table].loc[idx]
-        factor = direct_factor if direct_factor is not None else validate_factor(row.get('scaling', 1.))
+        factor = direct if direct is not None else validate_factor(row.get('scaling', 1.))
         group = row.get('solar_scaling_group')
         if isinstance(group, str) and group in SOLAR_SCALING_DEFAULTS:
             name = 'builder_portfolio:' + group
@@ -209,26 +223,25 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
                             rating_columns=RATING_COLUMNS,
                             zero_battery_disconnect_gen=True,
                             missing_rating_policy='setpoint',
-                            default_generator_scale=None):
+                            default_generator_scale=None,
+                            fixed_setpoint_technologies=FIXED_SETPOINT_TECHNOLOGIES):
     """Replace factors absolutely; validate all proposals before writing.
 
-    installed: use explicit positive MW, else default to unscaled p_mw.
-    Missing MW stays NaN in installed-power audit fields. The fallback is
-    valid dispatch scaling, NOT inferred physical installed capacity.
-    setpoint: always use unscaled p_mw. builder: delegate gen/sgen factors
-    to pp_builder, leaving p_mw unchanged. Batteries use explicit rules.
-    Unknown technologies are supported via exact labels or default/all.
-    External grids are balancing boundaries, not generation-scaled assets.
-    Caller restores baseline tables between seasons.
+    Fixed-setpoint gen/sgen rows are never touched in any basis, whatever the
+    rules or default say; status='fixed_setpoint_preserved'.
+    installed: explicit MW if present, else unscaled p_mw (audited fallback).
+    setpoint: unscaled p_mw. builder: pp_builder selects solar/wind factors.
+    Batteries follow explicit rules. Caller restores tables between seasons.
     """
     if basis not in {'installed', 'setpoint', 'builder'}:
         raise ValueError("generator_scaling_basis must be 'installed', 'setpoint' or 'builder'")
     if missing_rating_policy not in {'setpoint', 'raise'}:
         raise ValueError("missing_rating_policy must be 'setpoint' or 'raise'")
+    fixed_set = frozenset(key(f) for f in (fixed_setpoint_technologies or ()))
     rules = dict(rules)
     if default_generator_scale is not None:
         rules['default'] = {season: validate_factor(default_generator_scale)}
-    builder = _builder_factors(net, season, rules) if basis == 'builder' else {}
+    builder = _builder_factors(net, season, rules, fixed_set) if basis == 'builder' else {}
     plans = []
     for element in ('gen', 'sgen', 'load', 'storage'):
         frame = net.get(element)
@@ -238,9 +251,11 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
             battery = is_battery(row, element)
             if element == 'load' and not battery:
                 continue
+            fixed = is_fixed_setpoint(row, element, fixed_set)
             values = labels(row)
-            name, factor = resolve_rule(list(values), season, rules, battery=battery)
-            if basis == 'builder' and not battery:
+            name, factor = (None, None) if fixed else resolve_rule(
+                list(values), season, rules, battery=battery)
+            if basis == 'builder' and not battery and not fixed:
                 name, factor = builder.get((element, idx), (None, None))
             before_p = _float(row, 'p_mw')
             before_scale = _float(row, 'scaling', 1.)
@@ -248,10 +263,10 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
             after_p, after_scale = before_p, before_scale
             on_before = bool(row.get('in_service', True))
             on_after = on_before
-            effective = 'preserved'
+            effective = 'fixed_setpoint' if fixed else 'preserved'
             reference, reference_source = abs(before_p), 'unscaled_p_mw'
             fallback = False
-            status = 'unconfigured_preserved'
+            status = 'fixed_setpoint_preserved' if fixed else 'unconfigured_preserved'
             if factor is not None:
                 after_scale = factor
                 effective = 'builder_setpoint' if basis == 'builder' else 'setpoint'
@@ -265,7 +280,7 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
                     elif missing_rating_policy == 'raise':
                         raise ValueError(f'Installed-MW scaling requires a positive MW rating: '
                             f'{element}[{idx!r}] {row.get("name", "")!r}. '
-                            'sn_mva is not an MW rating. Supply MW metadata or use '
+                            "sn_mva is not an MW rating. Supply MW metadata or use "
                             "missing_rating_policy='setpoint'.")
                     else:
                         effective, fallback = 'setpoint_fallback', True
@@ -287,17 +302,18 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
                 q = _float(row, 'q_mvar')
                 q_before = sign * q * before_scale if on_before and bus_on else 0.
                 q_after = sign * q * after_scale if on_after and bus_on else 0.
-            record = dict(zip(AUDIT_COLUMNS, [None] * len(AUDIT_COLUMNS)))
+            record = dict.fromkeys(AUDIT_COLUMNS)
             record.update(
                 season=season, element_type=element, element_index=idx,
                 element_name=row.get('name'), technology=' | '.join(sorted(values)),
-                is_battery=battery, rule=name, requested_factor=factor, basis=basis,
+                is_battery=battery, is_fixed_setpoint=fixed, rule=name,
+                requested_factor=factor, basis=basis,
                 p_input_before_mw=before_p, scaling_before=before_scale,
                 p_set_before_mw=before_op, p_installed_mw=installed, rating_column=column,
                 p_input_after_mw=after_p, scaling_after=after_scale,
                 p_set_after_mw=after_op, expected_p_set_after_mw=after_op, p_error_mw=0.,
-                setpoint_ratio_after_before=after_op/before_op if before_op else np.nan,
-                utilization_installed=after_op/installed if np.isfinite(installed) else np.nan,
+                setpoint_ratio_after_before=after_op / before_op if before_op else np.nan,
+                utilization_installed=after_op / installed if np.isfinite(installed) else np.nan,
                 in_service_before=on_before, in_service_after=on_after, bus_in_service=bus_on,
                 slack=slack, slack_weight=weight, status=status, effective_basis=effective,
                 reference_p_mw=reference, reference_source=reference_source,
@@ -305,13 +321,11 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
                 rating_is_legacy_proxy=False, missing_rating_fallback=fallback,
                 q_set_before_mvar=q_before, q_set_after_mvar=q_after)
             plans.append((element, idx, after_p, after_scale, on_after, record))
-    fallback_count = sum(p[-1]['missing_rating_fallback'] for p in plans)
-    if fallback_count:
-        warnings.warn(f'{fallback_count} element(s) have no explicit installed MW; '
-                      'using unscaled p_mw for dispatch only. Installed MW and '
-                      'installed utilization remain unavailable. See effective_basis '
-                      'and reference_source in Scaling audit.', UserWarning, stacklevel=2)
-    # Validation, including builder delegation, has completed on private state.
+    n_fb = sum(p[-1]['missing_rating_fallback'] for p in plans)
+    if n_fb:
+        warnings.warn(f'{n_fb} scalable element(s) have no explicit installed MW; '
+                      'using unscaled p_mw for dispatch only. See effective_basis in '
+                      'Scaling audit.', UserWarning, stacklevel=2)
     for element, idx, p, scale, on, record in plans:
         if record['requested_factor'] is not None:
             net[element].at[idx, 'p_mw'] = p
@@ -351,8 +365,7 @@ def attach_actual_results(net, audit, *, converged, tolerance_mw=1e-7):
     audit['actual_utilization_installed'] = audit.actual_p_mw / audit.p_installed_mw
     audit['results_converged'] = bool(converged)
     audit['actual_status'] = np.select(
-        [audit.actual_p_mw.isna(),
-         audit.actual_minus_setpoint_mw.abs().le(tolerance_mw),
+        [audit.actual_p_mw.isna(), audit.actual_minus_setpoint_mw.abs().le(tolerance_mw),
          audit.slack | audit.slack_weight.gt(0)],
         ['unavailable_or_unsupplied', 'matches_setpoint', 'balancing_difference'],
         default='investigate_difference')

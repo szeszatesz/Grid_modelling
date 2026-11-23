@@ -56,7 +56,7 @@ def build_shunts(
         n_steps     = _int(row, "N", 1)
         s_per_step  = _float(row, "S", float("nan"))   # MVAr/step (signed)
         yz_us       = _float(row, "Yz", 0.0)           # µS/step
-        so_mvar     = _float(row, "So", 0.0)           # currently switched MVAr
+        so_mvar     = -1 * _float(row, "So", 0.0)           # currently switched MVAr
 
         
         if bus_name not in bus_map:

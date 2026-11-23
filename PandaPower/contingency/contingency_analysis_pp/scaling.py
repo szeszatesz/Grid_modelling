@@ -8,7 +8,9 @@ Basis semantics (non-fixed, non-battery gen/sgen):
               -> P = p_mw * model_factor * study_factor (CHAINED).
   builder   : pp_builder selects absolute factors, p_mw unchanged.
 Fixed-setpoint generators (conventional, biogas, hydro, standalone OTHERRES)
-are never touched. Batteries follow explicit rules. sn_mva is never MW.
+are never touched. Batteries follow explicit rules and accept a signed factor in
+[-1, 1] (+ discharge, - charge, 0 idle); every other rule must be >= 0.
+sn_mva is never MW.
 Solar rules may be keyed by builder portfolio (HMKE, MEKH_0_5_TO_5,
 MEKH_ABOVE_5, BTM_MV, DISTRIBUTED_22KV); a portfolio rule beats generic ones.
 """
@@ -37,6 +39,9 @@ DEFAULT_SOLAR_PORTFOLIO_SCALES = {
     'BTM_MV': {'summer': 0.4, 'winter': 0.3},
     'DISTRIBUTED_22KV': {'summer': 0.5, 'winter': 0.3},
 }
+# Battery factors are signed: +f = discharge (injection), -f = charge (consumption),
+# matching model_power_summary ("positive P = discharge"). Set False to flip.
+BATTERY_POSITIVE_IS_DISCHARGE = True
 ALIASES = {
     'solar': {'solar', 'solarphotovo', 'rooftoppv', 'otherres', 'pv'},
     'wind': {'wind', 'windonshore', 'windoffshore'},
@@ -116,10 +121,22 @@ def validate_factor(value):
     return factor
 
 
-def _factor_for_season(value, season):
+def validate_battery_factor(value):
+    """Battery factor: finite, -1 <= f <= 1 (+ = discharge, - = charge)."""
+    try:
+        factor = float(value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f'Battery scaling must be a number in [-1, 1], got {value!r}') from exc
+    if not np.isfinite(factor) or not -1.0 <= factor <= 1.0:
+        raise ValueError(f'Battery scaling must be finite and within [-1, 1], got {value!r}')
+    return factor
+
+
+def _factor_for_season(value, season, signed=False):
+    check = validate_battery_factor if signed else validate_factor
     if isinstance(value, Mapping):
-        return validate_factor(value[season]) if season in value else None
-    return validate_factor(value)
+        return check(value[season]) if season in value else None
+    return check(value)
 
 
 def solar_group(row):
@@ -151,7 +168,8 @@ def resolve_rule(value, season, rules, *, battery=False, group=None):
                 continue
             grp = set().union(*(ALIASES.get(n, {n}) for n in names)) if alias_pass else names
             if values & grp and (not battery or grp & ALIASES['battery']):
-                factor = _factor_for_season(setting, season)
+                factor = _factor_for_season(
+                    setting, season, signed=bool(names & ALIASES['battery']))
                 if factor is not None:
                     return name, factor
     for name, names, setting in normalized:
@@ -313,6 +331,15 @@ def apply_generator_scaling(net, season, rules, *, basis='setpoint',
                     else:
                         effective, fallback = 'setpoint_fallback', True
                         status = 'scaled;missing_rating_setpoint_fallback'
+                if battery and factor != 0:
+                    # Signed battery factor, generation convention. The stored
+                    # scaling stays >= 0; the direction is carried by p_mw.
+                    # load/storage p_mw > 0 is consumption, gen/sgen p_mw > 0 is injection.
+                    orient = 1.0 if BATTERY_POSITIVE_IS_DISCHARGE else -1.0
+                    natural = -1.0 if element in {'load', 'storage'} else 1.0
+                    after_p = natural * float(np.sign(orient * factor)) * abs(after_p)
+                    after_scale = abs(factor)
+                    status += ';battery_signed'
                 if battery and factor == 0 and element == 'gen' and zero_battery_disconnect_gen:
                     on_after = False
                     status += ';disabled_zero_battery_gen'

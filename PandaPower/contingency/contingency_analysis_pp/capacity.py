@@ -16,7 +16,8 @@ def _inject(net, bus, technologies: list[dict], scale: float, season: str,
         technology = str(tech.get("technology", "wind"))
         seasonal = seasonal_factor(technology, season, generator_scales)
         p = float(tech["P_MW"]) * scale * seasonal
-        q = float(tech.get("Q_MVAr", 0.0)) * scale * seasonal
+        # Batteries have a signed factor (+ discharge, - charge): the sign moves P, never Q.
+        q = float(tech.get("Q_MVAr", 0.0)) * scale * abs(seasonal)
         idx = pp.create_sgen(
             net, bus=bus, p_mw=p, q_mvar=q, name=tech["name"],
             min_q_mvar=float(tech.get("Q_min", -0.5 * abs(p))),

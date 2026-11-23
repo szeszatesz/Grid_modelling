@@ -36,6 +36,30 @@ VOLTAGE_CONTROL_TECHS = {
     "OTHERNONRES"
 }
 
+# ── MEKH (≥0,5 MW RES/storage) project list ───────────────────────────────────
+# Header keywords are accent-insensitive, lowercase; all must appear in header.
+MEKH_HEADER_ROW = 1                      # 0-based: row 1 is the title/image
+MEKH_SHEET_NAME = "Table 1"
+MEKH_COLUMN_KEYWORDS = {
+    "site":     ("telepules",),
+    "owner":    ("tulajdonos",),
+    "feed_mva": ("betaplalasi", "kapacitas"),
+    "draw_mva": ("vetelezesi", "kapacitas"),
+    "voltage":  ("feszultseg",),
+}
+MEKH_REQUIRED_KEYS = ("site", "owner", "feed_mva")
+
+# Known data corrections (applied automatically, reported as alarms only)
+MEKH_MEZOCSAT_SITE = "mezocsat"
+MEKH_MEZOCSAT_WRONG_MVA = 233.5          # 5 x 46.7 listed on every row
+MEKH_MEZOCSAT_FIXED_MVA = 46.7
+MEKH_MEZOCSAT_EXPECTED_ROWS = 5
+
+MEKH_DETK_SITE = "detk"
+MEKH_DETK_OWNER_KEY = "mvm zold generacio"
+MEKH_DETK_WRONG_MVA = 125.0
+MEKH_DETK_FIXED_MVA = 1.25
+
 # Default per-technology scaling factors: {technology: {season: scale}}
 TECH_SCALING_DEFAULTS: dict[str, dict[str, float]] = {
     TECHNOLOGY_WIND:    {RATING_SEASON_SUMMER: 0.7, RATING_SEASON_WINTER: 1},

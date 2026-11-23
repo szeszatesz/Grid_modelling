@@ -4,6 +4,7 @@ network_builder.py — orchestrator that calls all sub-builders in order.
 from __future__ import annotations
 from pathlib import Path
 import datetime
+import warnings
 
 import pandapower as pp
 from pandapower import to_excel
@@ -12,7 +13,7 @@ import math
 
 from pp_builder.geo_placement import place_unknown_buses
 from pp_builder.config import RATING_SEASON_SUMMER, _DISTRIBUTED_PV_DEFAULT_TOTAL_MW
-from pp_builder.excel_reader import read_excelsheets
+from pp_builder.excel_reader import read_excelsheets, read_mekh_projects, DataAlarm
 from pp_builder.busbar_builder     import build_busbars
 from pp_builder.branch_builder     import build_branches
 from pp_builder.transformer_2w_builder import build_transformers
@@ -102,7 +103,15 @@ class NetworkBuilder:
         print(f"{'='*60}")
 
         sheets = read_excelsheets(excel_path)
-        MEKH_list = read_excel(MEKH_excel_path, sheet_name="Table 1", header=1)
+        
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DataAlarm)
+            MEKH_list = read_mekh_projects(MEKH_excel_path)
+        for a in caught:
+            if issubclass(a.category, DataAlarm):
+                print(f"[NetworkBuilder][ALARM] {a.message}")
+            else:
+                warnings.warn_explicit(a.message, a.category, a.filename, a.lineno)
 
                 # ── Load coordinate data ───────────────────────────────────────────
         coord_map = load_bus_geodata(bus_geo_xlsx) if bus_geo_xlsx else None
